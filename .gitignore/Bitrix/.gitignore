@@ -137,7 +137,7 @@ backup_*/
 # Ignore the whole bitrix core directory by default (we don't store core)
 # If you have custom code under bitrix/* that must be versioned,
 # move it to /local/ or explicitly unignore specific paths.
- /bitrix/
+/bitrix/
 
 # Track local/ (recommended place for custom code) — keep everything in /local
 !/local/
