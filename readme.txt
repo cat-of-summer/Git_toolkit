@@ -37,7 +37,7 @@ Workflow поддерживает: BUILD (опционально) и три ва
 
 Настройка Variables и Secrets в GitHub
 -------------------------------------
-Открой: Settings → Environments / Variables и Settings → Secrets → Actions
+Открой: Settings → Environments
 
 **Variables (видимые в Actions):**
   - DEPLOY_METHOD — тип деплоя: FTP, RSYNC, GIT
