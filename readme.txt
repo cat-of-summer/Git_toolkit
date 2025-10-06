@@ -37,14 +37,14 @@ Workflow поддерживает: BUILD (опционально) и три ва
 
 Настройка Variables и Secrets в GitHub
 -------------------------------------
-Открой: Settings → Environments / Variables и Settings → Secrets → Actions
+Открой: Settings → Environments
 
 **Variables (видимые в Actions):**
   - DEPLOY_METHOD — тип деплоя: FTP, RSYNC, GIT
   - DEPLOY_HOST — IP или доменное имя сервера
   - DEPLOY_USER — пользователь для подключения (ssh/ftp)
   - DEPLOY_PATH — целевой путь на сервере (ВАЖНО: для FTP — путь от корня FTP-пользователя)
-  - DEPLOY_LOCAL_DIR — локальная папка в репо для деплоя (по умолчанию ./)
+  - DEPLOY_LOCAL_DIR — локальная папка в репозитории для деплоя (по умолчанию ./, из этой папки будут переносится файлы)
   - DEPLOY_MIRROR — true/false (если true — включается удаление удалённых файлов) (по умолчанию false)
   - DEPLOY_PORT — порт SSH/FTP (по умолчанию 22)
   - BUILD_COMMAND — команда сборки (если пусто — шаг BUILD пропускается)
@@ -91,7 +91,7 @@ Workflow поддерживает: BUILD (опционально) и три ва
 - DEPLOY_HOST — адрес сервера
 - DEPLOY_USER — пользователь для подключения
 - DEPLOY_PATH — целевая папка на сервере (для FTP — от корня FTP-юзера)
-- DEPLOY_LOCAL_DIR — локальная исходная папка в репо (./ по умолчанию)
+- DEPLOY_LOCAL_DIR — локальная папка в репозитории для деплоя (по умолчанию ./, из этой папки будут переносится файлы)
 - DEPLOY_KEY — приватный SSH-ключ или пароль для FTP (секрет)
 - DEPLOY_MIRROR — true/false, включение удаления удалённых файлов (true по умолчанию)
 - DEPLOY_PORT — порт (22 по умолчанию)
