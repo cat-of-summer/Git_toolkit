@@ -57,17 +57,12 @@ jobs:
             DELETE="--delete"
           fi
 
-          lftp -u "$DEPLOY_USER,$DEPLOY_KEY" "$DEPLOY_HOST" -e "
-            set ssl:verify-certificate no;
-            mirror -R
-              --parallel=4 \
-              --verbose \
-              $DELETE \
-              -x '(^|/)\.' \
-              $DEPLOY_LOCAL_DIR \
-              $DEPLOY_PATH ;
-            quit
-          "
+          lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" <<LFTP
+          set ssl:verify-certificate no
+          set ftp:passive-mode true
+          mirror -R --parallel=4 --verbose $DELETE -x '(^|/)\.' "$DEPLOY_LOCAL_DIR" "$DEPLOY_PATH"
+          quit
+          LFTP
 
       - name: RSYNC DEPLOY
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
