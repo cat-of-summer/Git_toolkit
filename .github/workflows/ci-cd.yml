@@ -35,15 +35,6 @@ jobs:
           
           $BUILD_COMMAND
           
-      - name: APT CACHE
-        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
-        uses: actions/cache@v3
-        with:
-          path: /var/cache/apt/archives
-          key: apt-cache-${{ runner.os }}-lftp
-          restore-keys: |
-            apt-cache-${{ runner.os }}-
-
       - name: FTP DEPLOY
         if: ${{ env.DEPLOY_METHOD == 'FTP' }}
         shell: bash
