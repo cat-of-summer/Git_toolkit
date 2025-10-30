@@ -49,9 +49,13 @@ jobs:
           fi
 
           lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" <<LFTP
-          set ssl:verify-certificate no
+          set net:timeout 30
+          set net:max-retries 5
+          set net:reconnect-interval-base 5
           set ftp:passive-mode true
-          mirror -R --parallel=4 --verbose $DELETE -x '(^|/)\.' "$DEPLOY_LOCAL_DIR" "$DEPLOY_PATH"
+          set ssl:verify-certificate no
+          set cmd:fail-exit true
+          mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' "$DEPLOY_LOCAL_DIR" "$DEPLOY_PATH"
           quit
           LFTP
 
