@@ -1,7 +1,7 @@
 name: ci-cd
 
 on:
-  push:
+  push: 
     branches:
       - '*'
 
@@ -74,9 +74,10 @@ jobs:
           echo "$DEPLOY_KEY" > "$TMP_KEY"
           chmod 600 "$TMP_KEY"
 
-          rsync -az --progress $DELETE \
+          rsync -avz --progress $DELETE \
             -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -p $DEPLOY_PORT" \
             --exclude='.*' \
+            --no-perms --no-owner --no-group \
             "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
 
           rm -f "$TMP_KEY"
