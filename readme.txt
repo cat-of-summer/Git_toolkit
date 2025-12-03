@@ -145,3 +145,34 @@ Troubleshooting — типичные ошибки и решения
 - lftp не может подключиться: проверь правильность хоста/порта, FTP-пользователя и пароля; проверь рабочую директорию FTP (для корректного DEPLOY_PATH).
 - git clone на сервере не проходит: убедись, что серверный пользователь имеет доступ к GitHub (Deploy key или ключ пользователя).
 - BUILD-ошибки: запускай BUILD локально и проверяй, чтобы все зависимости корректно устанавливали и скрипты работали в headless runner.
+
+Guide — при необходимости доступа к репозиторию к сервера через deploy-key
+1. Необходимо сгенерировать пару ключей SSH:
+  ssh-keygen -t ed25519 -C "REPONAME"
+2. Включить ssh-agent:
+  eval "$(ssh-agent -s)"
+3. Добавить в ssh-agent приватный ключ:
+  ssh-add ~/.ssh/REPONAME
+4. Указать подключение к GitHub через REPONAME ключ в файле .../.ssh/config:
+  Host github.com
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/REPONAME
+  IdentitiesOnly yes
+5. Проверить подключение к репозиторию по SSH ключу:
+  ssh -T git@github.com
+
+При неоходимости параллельного подключения к нескольким репозиториям, необходимо создать алиасы для github пользователей для каждого репозитория, указать все ключи:
+1. -
+2. -
+3. -
+4. Указать подключение к GitHub через REPONAME ключ для конкретного github пользователя в файле .../.ssh/config:
+  Host REPONAME
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/REPONAME
+  IdentitiesOnly yes
+5. Указать в репозитории удаленный репозиторий с алиасом:
+  git remote set-url origin git@REPONAME:OWNER/REPONAME.git
+6. Проверить подключение к репозиторию по SSH ключу:
+  ssh -T git@REPONAME
