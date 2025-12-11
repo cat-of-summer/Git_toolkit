@@ -61,7 +61,6 @@ composer.phar
 .env.local
 .env.*.local
 *.log
-wp-content/debug.log
 phpunit.xml
 phpunit.xml.dist
 
