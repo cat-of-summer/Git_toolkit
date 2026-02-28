@@ -40,6 +40,57 @@ jobs:
           # ── 2. Create .docignore with defaults if not exists ──────
           if [ ! -f "$DOCIGNORE" ]; then
             cat > "$DOCIGNORE" << 'IGNORE_EOF'
+          # ╔═══════════════════════════════════════════════════════════════╗
+          # ║              СИСТЕМА АВТОДОКУМЕНТАЦИИ — КАК ЭТО РАБОТАЕТ     ║
+          # ╚═══════════════════════════════════════════════════════════════╝
+          #
+          # При каждом push в репозиторий GitHub Action (docgen.yml) автоматически
+          # обходит все файлы проекта и воссоздаёт зеркальную структуру внутри .docs/:
+          #
+          #   src/app.php       →  .docs/src/app.php.md
+          #   src/utils/math.js →  .docs/src/utils/math.js.md
+          #   style.css         →  .docs/style.css.md
+          #
+          # В каждой папке внутри .docs/ создаётся README.md — индекс с оглавлением,
+          # содержащий ссылки на все вложенные файлы и подпапки этого уровня.
+          #
+          # ─── КАК ДОБАВИТЬ ДОКУМЕНТАЦИЮ ──────────────────────────────────────────────
+          #
+          # Открой нужный .md файл в .docs/ и пиши ниже строки <!-- DOCGEN:END -->.
+          # Содержимое после этого маркера никогда не перезаписывается автоматикой.
+          #
+          # Пример (.docs/src/app.php.md):
+          #
+          #   <!-- DOCGEN:START -->
+          #   # app.php
+          #   <!-- DOCGEN:END -->
+          #                             ← всё написанное здесь сохраняется навсегда
+          #   ## Описание
+          #   Точка входа приложения. Инициализирует конфиг и роутер.
+          #
+          # ─── КАК РАБОТАЕТ ОБНОВЛЕНИЕ ────────────────────────────────────────────────
+          #
+          # • Новый файл в репо      → создаётся соответствующий .md (только заголовок)
+          # • Файл удалён из репо    → соответствующий .md тоже удаляется
+          # • Существующий .md       → блок <!-- DOCGEN:START/END --> обновляется,
+          #                             всё остальное содержимое остаётся нетронутым
+          # • README.md в папках     → перезаписываются полностью (только оглавление)
+          #
+          # ─── КАК НАСТРОИТЬ ФИЛЬТРАЦИЮ (.docignore) ──────────────────────────────────
+          #
+          # Этот файл (.docignore) работает как чёрный список — перечисли что исключить.
+          # Доступные форматы:
+          #
+          #   *.ext         — все файлы с расширением    (пример: *.png)
+          #   dirname/      — папка целиком              (пример: node_modules/)
+          #   filename      — конкретный файл по имени   (пример: package-lock.json)
+          #   # комментарий — строки начинающиеся с # игнорируются
+          #
+          # Файл создаётся автоматически при первом запуске и больше не перезаписывается.
+          # Редактируй его свободно — изменения вступят в силу при следующем push.
+          #
+          # ════════════════════════════════════════════════════════════════════════════
+          #
           # ═══════════════════════════════════════════════
           # Blacklist for docs generation
           # Syntax: *.ext, dirname/, filename. Comments: #
@@ -297,7 +348,12 @@ jobs:
               files+=("$name")
             done < <(find "$dir" -maxdepth 1 -mindepth 1 -type f -name '*.md' | sort)
 
+            # Build auto-generated block into a temp file
+            local auto_tmp
+            auto_tmp="$(mktemp)"
+
             {
+              echo "<!-- DOCGEN:START -->"
               echo "# ${title}"
               echo ""
 
@@ -319,7 +375,32 @@ jobs:
                 done
                 echo ""
               fi
-            } > "$readme"
+
+              echo "<!-- DOCGEN:END -->"
+            } > "$auto_tmp"
+
+            if [ ! -f "$readme" ]; then
+              # New file: write auto block as full content
+              mv "$auto_tmp" "$readme"
+            else
+              if grep -q "<!-- DOCGEN:START -->" "$readme"; then
+                # Markers exist: replace only the auto block, preserve the rest
+                awk -v auto_file="$auto_tmp" '
+                  /<!-- DOCGEN:START -->/ {
+                    while ((getline line < auto_file) > 0) print line
+                    skip=1; next
+                  }
+                  /<!-- DOCGEN:END -->/ { skip=0; next }
+                  !skip { print }
+                ' "$readme" > "${readme}.tmp" && mv "${readme}.tmp" "$readme"
+                rm -f "$auto_tmp"
+              else
+                # No markers yet: prepend auto block, keep existing content as-is
+                { cat "$auto_tmp"; echo ""; cat "$readme"; } > "${readme}.tmp" \
+                  && mv "${readme}.tmp" "$readme"
+                rm -f "$auto_tmp"
+              fi
+            fi
           }
 
           while IFS= read -r dir; do
