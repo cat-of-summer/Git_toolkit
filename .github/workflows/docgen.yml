@@ -305,7 +305,7 @@ jobs:
                 echo "## Папки"
                 echo ""
                 for d in "${subdirs[@]}"; do
-                  echo "- [${d}](${d}/README.md)"
+                  echo "- [${d}](${d}/)"
                 done
                 echo ""
               fi
