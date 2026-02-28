@@ -1,5 +1,5 @@
 <!-- DOCGEN:START -->
-# CI_CD-deploy
+# GitHub_workflows
 
 ## Папки
 
