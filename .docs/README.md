@@ -2,5 +2,5 @@
 
 ## Папки
 
-- [.gitignore](.gitignore/README.md)
+- [.gitignore](.gitignore/)
 
