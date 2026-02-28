@@ -21,9 +21,19 @@ jobs:
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
       DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD }}
       BUILD_COMMAND: ${{ vars.BUILD_COMMAND }}
+      DEPLOY_COMMAND: ${{ vars.DEPLOY_COMMAND }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: SETUP SSH KEY
+        if: ${{ env.DEPLOY_METHOD == 'RSYNC' || env.DEPLOY_METHOD == 'GIT' }}
+        shell: bash
+        run: |
+          TMP_KEY=$(mktemp)
+          echo "$DEPLOY_KEY" > "$TMP_KEY"
+          chmod 600 "$TMP_KEY"
+          echo "TMP_KEY=$TMP_KEY" >> "$GITHUB_ENV"
 
       - name: BUILD
         if: ${{ env.BUILD_COMMAND != '' }}
@@ -35,13 +45,26 @@ jobs:
           
           $BUILD_COMMAND
           
+      - name: Cache lftp
+        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
+        id: cache-lftp
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-lftp
+
       - name: FTP DEPLOY
         if: ${{ env.DEPLOY_METHOD == 'FTP' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          sudo apt-get install -y --no-install-recommends lftp
+          if [ "${{ steps.cache-lftp.outputs.cache-hit }}" = "true" ] && ls /var/cache/apt/archives/lftp_*.deb &>/dev/null; then
+            sudo dpkg -i /var/cache/apt/archives/lftp_*.deb || sudo apt-get install -f -y --no-install-recommends
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends lftp
+          fi
 
           DELETE=""
           if [ "${DEPLOY_MIRROR}" = "true" ]; then
@@ -70,17 +93,11 @@ jobs:
             DELETE="--delete"
           fi
 
-          TMP_KEY=$(mktemp)
-          echo "$DEPLOY_KEY" > "$TMP_KEY"
-          chmod 600 "$TMP_KEY"
-
           rsync -avz --progress $DELETE \
-            -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -p $DEPLOY_PORT" \
+            -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
             --exclude='.*' \
             --no-perms --no-owner --no-group \
             "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
-
-          rm -f "$TMP_KEY"
 
       - name: GIT DEPLOY
         if: ${{ env.DEPLOY_METHOD == 'GIT' }}
@@ -90,11 +107,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          TMP_KEY=$(mktemp)
-          echo "$DEPLOY_KEY" > "$TMP_KEY"
-          chmod 600 "$TMP_KEY"
-
-          ssh -i $TMP_KEY -o StrictHostKeyChecking=no -p $DEPLOY_PORT $DEPLOY_USER@$DEPLOY_HOST "
+          ssh -i "$TMP_KEY" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT $DEPLOY_USER@$DEPLOY_HOST "
             cd $DEPLOY_PATH
             if [ ! -d '.git' ]; then
               git clone --branch ${GITHUB_REF_NAME} git@github.com:${GITHUB_REPOSITORY}.git .
@@ -107,5 +120,20 @@ jobs:
               fi
             fi
           "
-          
-          rm -f "$TMP_KEY"
+
+      - name: POST DEPLOY COMMAND
+        if: ${{ env.DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ssh -i "$TMP_KEY" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "
+            cd $DEPLOY_PATH
+            $DEPLOY_COMMAND
+          "
+
+      - name: CLEANUP SSH KEY
+        if: always()
+        shell: bash
+        run: |
+          [ -n "${TMP_KEY:-}" ] && [ -f "$TMP_KEY" ] && rm -f "$TMP_KEY" || true
