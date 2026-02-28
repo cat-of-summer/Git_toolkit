@@ -34,10 +34,8 @@ jobs:
           DOCS_DIR=".docs"
           DOCIGNORE="$DOCS_DIR/.docignore"
 
-          # ── 1. Create .docs directory ─────────────────────────────
           mkdir -p "$DOCS_DIR"
 
-          # ── 2. Create .docignore with defaults if not exists ──────
           if [ ! -f "$DOCIGNORE" ]; then
             cat > "$DOCIGNORE" << 'IGNORE_EOF'
           # ╔═══════════════════════════════════════════════════════════════╗
@@ -234,7 +232,6 @@ jobs:
             echo "Created default $DOCIGNORE"
           fi
 
-          # ── 3. Parse .docignore into grep -E pattern ──────────────
           build_exclude_pattern() {
             local patterns=()
             while IFS= read -r line || [[ -n "$line" ]]; do
@@ -267,17 +264,12 @@ jobs:
 
           EXCLUDE_PATTERN="$(build_exclude_pattern "$DOCIGNORE")"
 
-          # ── 4. Get filtered file list ─────────────────────────────
           mapfile -t ALL_FILES < <(
             find . -not -path './.docs/*' -not -path './.git/*' -type f \
               | sed 's|^\./||' \
               | { [[ -n "$EXCLUDE_PATTERN" ]] && grep -viE "$EXCLUDE_PATTERN" || cat; } \
               | sort
           )
-
-          echo "Found ${#ALL_FILES[@]} source files to document"
-
-          # ── Pass 1: Sync — delete orphans, create new ─────────────
 
           TMPDIR_WORK="$(mktemp -d)"
           trap 'rm -rf "$TMPDIR_WORK"' EXIT
@@ -318,10 +310,6 @@ jobs:
             ((new_count++)) || true
           done < "$TMPDIR_WORK/new.txt"
 
-          echo "Pass 1 done: +${new_count} new, -${orphan_count} orphans"
-
-          # ── Pass 2: Generate README.md indexes (always overwrite) ──
-
           generate_index() {
             local dir="$1"
             local readme="$dir/README.md"
@@ -348,7 +336,6 @@ jobs:
               files+=("$name")
             done < <(find "$dir" -maxdepth 1 -mindepth 1 -type f -name '*.md' | sort)
 
-            # Build auto-generated block into a temp file
             local auto_tmp
             auto_tmp="$(mktemp)"
 
@@ -380,11 +367,9 @@ jobs:
             } > "$auto_tmp"
 
             if [ ! -f "$readme" ]; then
-              # New file: write auto block as full content
               mv "$auto_tmp" "$readme"
             else
               if grep -q "<!-- DOCGEN:START -->" "$readme"; then
-                # Markers exist: replace only the auto block, preserve the rest
                 awk -v auto_file="$auto_tmp" '
                   /<!-- DOCGEN:START -->/ {
                     while ((getline line < auto_file) > 0) print line
@@ -395,7 +380,6 @@ jobs:
                 ' "$readme" > "${readme}.tmp" && mv "${readme}.tmp" "$readme"
                 rm -f "$auto_tmp"
               else
-                # No markers yet: prepend auto block, keep existing content as-is
                 { cat "$auto_tmp"; echo ""; cat "$readme"; } > "${readme}.tmp" \
                   && mv "${readme}.tmp" "$readme"
                 rm -f "$auto_tmp"

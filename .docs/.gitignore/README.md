@@ -41,12 +41,18 @@ git commit -m "Apply .gitignore"
 Здесь собраны шаблонные решения .gitignore, чтобы вновь применить правила в уже созданном репозитории:
 
 # 1 Добавляем .gitignore и коммитим его
+```bash
 git add .gitignore
 git commit -m "Update .gitignore."
+```
 
 # 2 Прекратить отслеживать файлы в индексе (оставит файлы на диске)
+```bash
 git rm -r --cached .
+```
 
 # 3 Добавить всё по-новой (индекс пересобран с учётом .gitignore)
+```bash
 git add .
 git commit -m "Rebuild index according to updated .gitignore"
+```
