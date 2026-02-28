@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          DOCS_DIR=".docs"
+          DOCS_DIR="docs"
           DOCIGNORE="$DOCS_DIR/.docignore"
 
           mkdir -p "$DOCS_DIR"
@@ -43,21 +43,21 @@ jobs:
           # ╚═══════════════════════════════════════════════════════════════╝
           #
           # При каждом push в репозиторий GitHub Action (docgen.yml) автоматически
-          # обходит все файлы проекта и воссоздаёт зеркальную структуру внутри .docs/:
+          # обходит все файлы проекта и воссоздаёт зеркальную структуру внутри docs/:
           #
-          #   src/app.php       →  .docs/src/app.php.md
-          #   src/utils/math.js →  .docs/src/utils/math.js.md
-          #   style.css         →  .docs/style.css.md
+          #   src/app.php       →  docs/src/app.php.md
+          #   src/utils/math.js →  docs/src/utils/math.js.md
+          #   style.css         →  docs/style.css.md
           #
-          # В каждой папке внутри .docs/ создаётся README.md — индекс с оглавлением,
+          # В каждой папке внутри docs/ создаётся README.md — индекс с оглавлением,
           # содержащий ссылки на все вложенные файлы и подпапки этого уровня.
           #
           # ─── КАК ДОБАВИТЬ ДОКУМЕНТАЦИЮ ──────────────────────────────────────────────
           #
-          # Открой нужный .md файл в .docs/ и пиши ниже строки <!-- DOCGEN:END -->.
+          # Открой нужный .md файл в docs/ и пиши ниже строки <!-- DOCGEN:END -->.
           # Содержимое после этого маркера никогда не перезаписывается автоматикой.
           #
-          # Пример (.docs/src/app.php.md):
+          # Пример (docs/src/app.php.md):
           #
           #   <!-- DOCGEN:START -->
           #   # app.php
@@ -220,7 +220,7 @@ jobs:
           build/
           .git/
           .github/
-          .docs/
+          docs/
           __pycache__/
           .cache/
           .tmp/
@@ -265,7 +265,7 @@ jobs:
           EXCLUDE_PATTERN="$(build_exclude_pattern "$DOCIGNORE")"
 
           mapfile -t ALL_FILES < <(
-            find . -not -path './.docs/*' -not -path './.git/*' -type f \
+            find . -not -path './docs/*' -not -path './.git/*' -type f \
               | sed 's|^\./||' \
               | { [[ -n "$EXCLUDE_PATTERN" ]] && grep -viE "$EXCLUDE_PATTERN" || cat; } \
               | sort
@@ -397,7 +397,7 @@ jobs:
       - name: Stage docs changes
         run: |
           set -euo pipefail
-          git add .docs/
+          git add docs/
           git rm -r --cached node_modules 2>/dev/null || true
 
       - name: Commit & push if there are changes
