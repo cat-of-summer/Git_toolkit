@@ -41,7 +41,7 @@ jobs:
           if [ ! -f "$DOCIGNORE" ]; then
             cat > "$DOCIGNORE" << 'IGNORE_EOF'
           # ═══════════════════════════════════════════════
-          # .docignore — blacklist for docs generation
+          # Blacklist for docs generation
           # Syntax: *.ext, dirname/, filename. Comments: #
           # ═══════════════════════════════════════════════
 
@@ -65,6 +65,7 @@ jobs:
 
           # Documents
           *.doc
+          *.md
           *.docx
           *.pdf
           *.xls
@@ -154,6 +155,8 @@ jobs:
           *.min.css
 
           # Lock files
+          .dockerignore
+          .gitignore
           package-lock.json
           yarn.lock
           composer.lock
@@ -280,19 +283,19 @@ jobs:
             fi
 
             local subdirs=()
-            for entry in "$dir"/*/; do
-              [[ ! -d "$entry" ]] && continue
-              subdirs+=("$(basename "$entry")")
-            done
+            while IFS= read -r subdir; do
+              [[ -z "$subdir" ]] && continue
+              subdirs+=("$(basename "$subdir")")
+            done < <(find "$dir" -maxdepth 1 -mindepth 1 -type d | sort)
 
             local files=()
-            for entry in "$dir"/*.md; do
-              [[ ! -f "$entry" ]] && continue
+            while IFS= read -r entry; do
+              [[ -z "$entry" ]] && continue
               local name
               name="$(basename "$entry")"
               [[ "$name" == "README.md" ]] && continue
               files+=("$name")
-            done
+            done < <(find "$dir" -maxdepth 1 -mindepth 1 -type f -name '*.md' | sort)
 
             {
               echo "# ${title}"
