@@ -165,7 +165,6 @@
 
 # Lock files
 .dockerignore
-.gitignore
 package-lock.json
 yarn.lock
 composer.lock
