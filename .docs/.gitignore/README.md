@@ -1,9 +1,10 @@
 <!-- DOCGEN:START -->
 # .gitignore
 
-## Файлы
+## Папки
 
-- [readme.txt](readme.txt.md)
+- [Bitrix](Bitrix/)
+- [Wordpress](Wordpress/)
 
 <!-- DOCGEN:END -->
 
