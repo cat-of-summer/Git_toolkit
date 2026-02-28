@@ -1,8 +1,9 @@
 <!-- DOCGEN:START -->
-# Документация
+# CI_CD-deploy
 
 ## Папки
 
+- [.github](.github/)
 - [.gitignore](.gitignore/)
 
 <!-- DOCGEN:END -->
