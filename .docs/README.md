@@ -6,10 +6,3 @@
 - [.gitignore](.gitignore/)
 
 <!-- DOCGEN:END -->
-
-# Документация
-
-## Папки
-
-- [.gitignore](.gitignore/)
-
