@@ -327,7 +327,7 @@ jobs:
             local readme="$dir/README.md"
 
             if [[ "$dir" == "$DOCS_DIR" ]]; then
-              local title="Документация"
+              local title="${GITHUB_REPOSITORY##*/}"
             else
               local title
               title="$(basename "$dir")"

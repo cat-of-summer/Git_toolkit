@@ -178,7 +178,6 @@ vendor/
 dist/
 build/
 .git/
-.github/
 .docs/
 __pycache__/
 .cache/
