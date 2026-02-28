@@ -1,3 +1,8 @@
+<!-- DOCGEN:START -->
+# Bitrix
+
+<!-- DOCGEN:END -->
+
 # Bitrix
 
 ## Файлы
