@@ -216,6 +216,7 @@ jobs:
           # Directories
           node_modules/
           vendor/
+          venv/
           dist/
           build/
           .git/
