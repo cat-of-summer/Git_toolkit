@@ -4,6 +4,7 @@
 ## Папки
 
 - [Bitrix](Bitrix/)
+- [Python](Python/)
 - [Wordpress](Wordpress/)
 
 <!-- DOCGEN:END -->
