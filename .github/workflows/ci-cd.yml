@@ -1,15 +1,21 @@
 name: ci-cd
 
 on:
-  push: 
+  push:
     branches:
       - '*'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch / environment to deploy'
+        required: true
+        type: environment
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    environment: ${{ github.ref_name }}
+    environment: ${{ inputs.branch || github.ref_name }}
 
     env:
       DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
@@ -25,6 +31,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch || github.ref_name }}
 
       - name: SETUP SSH KEY
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' || env.DEPLOY_METHOD == 'GIT' }}
