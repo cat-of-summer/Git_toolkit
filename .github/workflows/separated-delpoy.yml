@@ -1,27 +1,23 @@
-name: commits-delpoy
+name: separated-delpoy
 
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch / environment to deploy'
-        required: true
-        type: environment
       commits:
-        description: 'Comma-separated commits to deploy (abc123,def456)'
+        description: 'Comma-separated commits to deploy'
         required: true
         type: string
       deploy_mirror:
-        description: 'Delete files removed in these commits (true/false). Leave empty = false'
+        description: 'Delete files removed in these commits (true/false)'
         required: false
         type: string
-        default: 'false'
+        default: 'true'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    environment: ${{ inputs.branch }}
+    environment: ${{ github.ref_name }}
 
     env:
       DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
@@ -38,7 +34,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch }}
           fetch-depth: 0
 
       - name: SETUP SSH KEY
@@ -81,9 +76,10 @@ jobs:
           # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
+          [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
-          # Parse comma-separated commits, trim whitespace
-          IFS=',' read -ra COMMITS_ARR <<< "${{ inputs.commits }}"
+          # Parse commits: supports commas, spaces, tabs, newlines as separators
+          readarray -t COMMITS_ARR < <(echo "${{ inputs.commits }}" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
 
           for commit in "${COMMITS_ARR[@]}"; do
             commit="${commit// /}"
@@ -146,6 +142,7 @@ jobs:
 
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
+          [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
           {
             echo "set net:timeout 30"
@@ -195,6 +192,7 @@ jobs:
 
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
+          [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
           if [ -z "$LOCAL_DIR" ]; then
             SRC_DIR="./"
           else
@@ -205,6 +203,7 @@ jobs:
             rsync -avz --progress \
               -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
               --files-from="$UPLOAD_FILE" \
+              --ignore-missing-args \
               --no-perms --no-owner --no-group \
               "$SRC_DIR" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
           else
