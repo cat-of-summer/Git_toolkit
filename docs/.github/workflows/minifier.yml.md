@@ -1,43 +1,39 @@
-# minifier.yml
+# minifier.yml — автоминификация CSS & JS
 
-Workflow автоминификации CSS и JS файлов. Запускается при `push` в любую ветку.
-Находит все файлы `*.css` и `*.js` (не `*.min.*`), создаёт рядом `filename.min.css` / `filename.min.js` и коммитит их в ту же ветку.
+Workflow: `.github/workflows/minifier.yml`
 
-## Шаги
+Назначение: автоматически минифицировать фронтенд-ассеты (`*.css`, `*.js`) и закоммитить результаты в ту же ветку.
 
-| Шаг | Описание |
-|------|------------|
-| `Checkout` | `fetch-depth: 0`, `persist-credentials: true` |
-| `Configure git user` | Устанавливает `github-actions[bot]` для коммитов |
-| `Setup Node.js 18` | `actions/setup-node@v3` |
-| `Install latest minifiers` | `npm install csso-cli terser@latest` (no-save, no-audit) |
-| `Find and minify .css & .js` | Рекурсивный поиск + параллельная минификация через `xargs -P` |
-| `Stage only minified files` | `git add *.min.css *.min.js` |
-| `Commit & push` | Коммит `auto:minify [skip ci]` если есть изменения |
+Триггер: `push`
 
-## Инструменты
+Что делает шаг `Find and minify`:
+- Устанавливает `csso-cli` и `terser` локально (npm)
+- Находит все `*.css` и `*.js`, исключая `*.min.*` и каталоги: `node_modules`, `vendor`, `dist`, `build`, `bower_components`.
+- Для каждого файла создаётся `file.min.css` / `file.min.js` рядом с исходником.
+- Параллелит через `xargs -P $(nproc)` для ускорения на раннерах.
 
-| Инструмент | Назначение |
-|-----------|------------|
-| `csso-cli` | Минификация CSS |
-| `terser` | Минификация JS (`--compress --mangle`) |
+Настройки и рекомендации:
+- Версия Node.js: 18 (устанавливается через `actions/setup-node@v3`).
+- Не храните в репо исходники, которые не должны минифицироваться (используйте `.docignore`/`.gitignore`).
+- Если вы предпочитаете собирать ассеты в `dist/` локально, настройте `DEPLOY_LOCAL_DIR` чтобы деплой отправлял нужную папку.
 
-## Исключения при поиске
+Коммит и push:
+- После генерации workflow stages только minified файлы в индекс и делает коммит `auto:minify [skip ci]`.
+- Если нет изменений — workflow завершится с сообщением `No minified changes to commit`.
 
-Workflow не минифицирует файлы в следующих папках:
-- Скрытые (начинающиеся с `.`)
-- `node_modules/`, `vendor/`, `dist/`, `build/`, `bower_components/`
-- Файлы уже названные `*.min.*`
-
-## Параллельная обработка
-
-Файлы обрабатываются параллельно: `xargs -P $(nproc)`. На стандартных GitHub-раннерах доступно 2 ядра.
-
-## Выходные файлы
+Примеры преобразования:
 
 ```
-src/app.css    →  src/app.min.css
-src/main.js    →  src/main.min.js
+src/styles/app.css  → src/styles/app.min.css
+assets/main.js      → assets/main.min.js
 ```
 
-Минифицированные файлы подключай напрямую в HTML: `<link rel="stylesheet" href="app.min.css">`.
+Отладка:
+- Посмотрите вывод шага `Find and minify` в Actions для списка файлов и ошибок минификации.
+- Локально можно проверить команды:
+
+```bash
+npx csso src/styles/app.css --output src/styles/app.min.css
+npx terser assets/main.js -o assets/main.min.js --compress --mangle
+```
+

@@ -1,56 +1,85 @@
-# ci-cd.yml
+<!-- DOCGEN:START -->
+# ci-cd.yml — CI/CD деплой
 
-Workflow деплоя проекта на удалённый сервер. Запускается при `push` в любую ветку.
-Окружение (`environment`) выбирается автоматически из имени ветки — правила и секреты берутся из соответствующего Environment в GitHub.
+Подробная документация для workflow `.github/workflows/ci-cd.yml`.
 
-## Шаги
+Назначение: универсальный деплой (FTP / RSYNC / GIT) с опциональной сборкой.
 
-| Шаг | Условие | Описание |
-|------|----------|------------|
-| `SETUP SSH KEY` | `RSYNC` или `GIT` | Создаёт временный файл SSH-ключа, путь экспортируется через `$GITHUB_ENV` |
-| `BUILD` | `BUILD_COMMAND != ''` | `npm ci` + произвольная команда сборки |
-| `Cache lftp` | `FTP` | Кеширует `.deb`-пакет `lftp` через `actions/cache@v4` |
-| `FTP DEPLOY` | `FTP` | Зеркальный перенос файлов через `lftp mirror -R` |
-| `RSYNC DEPLOY` | `RSYNC` | Синхронизация через `rsync` по SSH |
-| `GIT DEPLOY` | `GIT` | `git clone` / `git fetch+reset` / `git pull` на сервере через SSH |
-| `POST DEPLOY COMMAND` | `DEPLOY_COMMAND != ''` и не `FTP` | Выполняет `DEPLOY_COMMAND` в `DEPLOY_PATH` на сервере |
-| `CLEANUP SSH KEY` | `always()` | Удаляет временный файл ключа даже при ошибке предыдущих шагов |
+Триггеры:
+- `push` — любые ветки
+- `workflow_dispatch` — ручной запуск с вводом `branch` (environment)
 
-## Переменные (GitHub Environment)
+Входные параметры (workflow_dispatch):
+- `branch` — имя ветки / environment (тип: environment)
 
-### Variables
+Переменные окружения (через GitHub `Environments` / `vars`):
 
-| Переменная | Обязательна | По умолчанию | Описание |
-|------------|----------|--------------|------------|
-| `DEPLOY_METHOD` | ✓ | — | `FTP`, `RSYNC` или `GIT` |
-| `DEPLOY_HOST` | ✓ | — | IP или домен сервера |
-| `DEPLOY_USER` | ✓ | — | Пользователь SSH / FTP |
-| `DEPLOY_PATH` | ✓ | — | Целевой путь на сервере |
-| `DEPLOY_LOCAL_DIR` | | `./` | Локальная папка для деплоя |
-| `DEPLOY_MIRROR` | | `false` | `true` — удалять лишние файлы на сервере |
-| `DEPLOY_PORT` | | `22` | Порт SSH / FTP |
-| `BUILD_COMMAND` | | — | Команда сборки. Если пустая — шаг пропускается |
-| `DEPLOY_COMMAND` | | — | Команда на сервере после деплоя. Недоступна для FTP |
+| Переменная | Описание | Рекомендация |
+|------------|---------|--------------|
+| `DEPLOY_METHOD` | Метод деплоя: `FTP`, `RSYNC`, `GIT` | Настрой в Environment |
+| `DEPLOY_HOST` | Хост или IP сервера | Обязательно для всех методов |
+| `DEPLOY_USER` | SSH/FTP пользователь | — |
+| `DEPLOY_PATH` | Целевая директория на сервере | Рекомендуется полный путь |
+| `DEPLOY_LOCAL_DIR` | Локальная директория для деплоя | По умолчанию `./` |
+| `DEPLOY_MIRROR` | `true` — удалять файлы на сервере | По умолчанию `false` (опасно) |
+| `DEPLOY_PORT` | Порт подключения | По умолчанию `22` |
+| `BUILD_COMMAND` | Команда сборки (если пусто — шаг пропускается) | Пример: `npm ci && npm run build` |
+| `DEPLOY_COMMAND` | Команда на сервере после деплоя (не для FTP) | Пример: `php artisan migrate` |
 
-### Secrets
+Secrets:
 
 | Секрет | Описание |
-|--------|------------|
-| `DEPLOY_KEY` | Приватный SSH-ключ (для RSYNC/GIT) или пароль FTP |
+|-------|----------|
+| `DEPLOY_KEY` | Для `RSYNC`/`GIT` — приватный SSH-ключ; для `FTP` — пароль | 
 
-## Особенности методов
+---
 
-### FTP
-- Использует `lftp mirror -R`. `DEPLOY_PATH` указывать относительно корня FTP-пользователя.
-- `DEPLOY_KEY` — это пароль, не SSH-ключ. `DEPLOY_COMMAND` недоступен.
-- `lftp` кешируется через `actions/cache` — повторные запуски устанавливают пакет через `dpkg -i` без сети.
+Порядок шагов (кратко):
 
-### RSYNC
-- SSH-ключ создаётся один раз в `SETUP SSH KEY`, используется в RSYNC и POST DEPLOY COMMAND.
-- `DEPLOY_MIRROR=true` добавляет `--delete`.
-- SSH-опции: `BatchMode=yes`, `ConnectTimeout=30`, `StrictHostKeyChecking=no`.
+1. Checkout репозитория (с нужной веткой).
+2. При `RSYNC`/`GIT` — создаётся временный файл с приватным ключом (`TMP_KEY`).
+3. Опциональный `BUILD` — запускается, если задан `BUILD_COMMAND`.
+4. В зависимости от `DEPLOY_METHOD` выполняется один из деплой-алгоритмов:
+	- `FTP` — `lftp mirror -R` (логин: `$DEPLOY_USER,$DEPLOY_KEY`).
+	- `RSYNC` — `rsync -e "ssh -i $TMP_KEY ..."` с опцией `--delete` при `DEPLOY_MIRROR=true`.
+	- `GIT` — SSH-подключение к серверу, `git clone` или `git pull`/`reset` в зависимости от `DEPLOY_MIRROR`.
+5. `POST DEPLOY COMMAND` — выполняется по SSH (не для FTP) при наличии `DEPLOY_COMMAND`.
+6. Очистка временного ключа (`CLEANUP SSH KEY`).
 
-### GIT
-- Первый деплой: `git clone --branch BRANCH`.
-- `DEPLOY_MIRROR=true` → `git fetch + reset --hard`; `false` → `git pull`.
-- Сервер должен иметь SSH-доступ к GitHub (Deploy key или ключ пользователя).
+Примеры конфигураций:
+
+1) Простая синхронизация через `rsync` (Environment vars):
+
+```
+DEPLOY_METHOD=RSYNC
+DEPLOY_HOST=example.com
+DEPLOY_USER=deploy
+DEPLOY_PATH=/var/www/project
+DEPLOY_LOCAL_DIR=build/
+DEPLOY_MIRROR=true
+DEPLOY_PORT=22
+BUILD_COMMAND=npm ci && npm run build
+DEPLOY_COMMAND=php artisan migrate
+```
+
+2) FTP деплой (пароль в `DEPLOY_KEY`):
+
+```
+DEPLOY_METHOD=FTP
+DEPLOY_HOST=ftp.example.com
+DEPLOY_USER=ftpuser
+DEPLOY_PATH=./public_html
+DEPLOY_KEY=<ftp-password-as-secret>
+```
+
+Безопасность и рекомендации:
+- Всегда храните приватные ключи в `Secrets` (не в `vars`).
+- Не ставьте `DEPLOY_MIRROR=true` без тестирования — это удалит файлы на сервере.
+- Тестируйте `BUILD_COMMAND` локально перед пушем.
+
+Отладка:
+- Логи workflow показывают stdout/stderr каждого шага (Actions → run).
+- Для проверки SSH используйте `ssh -i deploy_key -T deploy@host` локально.
+- Для FTP проверьте рабочую директорию клиента, чтобы корректно указать `DEPLOY_PATH`.
+
+<!-- DOCGEN:END -->
