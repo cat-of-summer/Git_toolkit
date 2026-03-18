@@ -6,6 +6,7 @@
 - [ci-cd.yml](ci-cd.yml.md)
 - [docgen.yml](docgen.yml.md)
 - [minifier.yml](minifier.yml.md)
+- [separated-delpoy.yml](separated-delpoy.yml.md)
 
 <!-- DOCGEN:END -->
 
