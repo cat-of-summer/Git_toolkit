@@ -1,4 +1,4 @@
-name: Generate docs structure
+name: docgen
 
 on:
   push: {}
