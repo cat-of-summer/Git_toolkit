@@ -18,7 +18,7 @@ Workflow `.github/workflows/separated-delpoy.yml` предназначен дл�
 	- Дедуплицирует результаты.
 - Затем выполняется выбранный метод деплоя (FTP/RSYNC) только с этими файлами.
 
-Переменные и секреты — те же, что используются в `ci-cd.yml`:
+Переменные и секреты — те же, что используются в `deploy.yml`:
 - `DEPLOY_METHOD`, `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PATH`, `DEPLOY_LOCAL_DIR`, `DEPLOY_MIRROR`, `DEPLOY_PORT`, `BUILD_COMMAND`, `DEPLOY_COMMAND`, `DEPLOY_KEY` (секрет).
 
 Пример использования (`workflow_dispatch` в веб-интерфейсе):

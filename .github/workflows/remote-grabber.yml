@@ -1,0 +1,284 @@
+name: remote-grabber
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch / environment to sync from'
+        required: true
+        type: environment
+      delete_removed:
+        description: 'Remove local files that no longer exist on server (true/false)'
+        required: false
+        type: string
+        default: 'false'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    environment: ${{ inputs.branch || github.ref_name }}
+
+    permissions:
+      contents: write
+
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_LOCAL_DIR: ${{ vars.DEPLOY_LOCAL_DIR || './' }}
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD }}
+      DELETE_REMOVED: ${{ inputs.delete_removed || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch || github.ref_name }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SETUP SSH KEY
+        if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
+        shell: bash
+        run: |
+          TMP_KEY=$(mktemp)
+          echo "$DEPLOY_KEY" > "$TMP_KEY"
+          chmod 600 "$TMP_KEY"
+          echo "TMP_KEY=$TMP_KEY" >> "$GITHUB_ENV"
+
+      - name: Cache lftp
+        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
+        id: cache-lftp
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-lftp
+
+      - name: Install lftp
+        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
+        shell: bash
+        run: |
+          if [ "${{ steps.cache-lftp.outputs.cache-hit }}" = "true" ] && ls /var/cache/apt/archives/lftp_*.deb &>/dev/null; then
+            sudo dpkg -i /var/cache/apt/archives/lftp_*.deb || sudo apt-get install -f -y --no-install-recommends
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends lftp
+          fi
+
+      - name: LIST SERVER FILES
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
+          LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
+          LOCAL_DIR="${LOCAL_DIR#./}"
+          [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
+          echo "LOCAL_DIR=$LOCAL_DIR" >> "$GITHUB_ENV"
+
+          SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+
+          if [ "$DEPLOY_METHOD" = "RSYNC" ]; then
+            ssh -i "$TMP_KEY" \
+              -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p "$DEPLOY_PORT" \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              "find '$DEPLOY_PATH' -type f -printf '%P\n'" \
+              > "$SERVER_FILES"
+
+          elif [ "$DEPLOY_METHOD" = "FTP" ]; then
+            lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" <<LFTP > "$RUNNER_TEMP/server_files_raw.txt"
+          set net:timeout 30
+          set net:max-retries 5
+          set net:reconnect-interval-base 5
+          set ftp:passive-mode true
+          set ssl:verify-certificate no
+          set cmd:fail-exit true
+          find $DEPLOY_PATH
+          quit
+          LFTP
+            # Strip the DEPLOY_PATH/ prefix so paths are relative
+            DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
+            sed "s|^${DEPLOY_PATH_STRIPPED}/||" "$RUNNER_TEMP/server_files_raw.txt" \
+              | grep -v '^$' > "$SERVER_FILES"
+          fi
+
+          echo "=== Total files on server: $(wc -l < "$SERVER_FILES") ==="
+
+      - name: FILTER FILES VIA GITIGNORE
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+          FILTERED_FILES="$RUNNER_TEMP/to_download.txt"
+          IGNORED_FILES="$RUNNER_TEMP/ignored.txt"
+
+          # If DEPLOY_LOCAL_DIR is set, server paths are relative to it.
+          # For git check-ignore we need paths relative to repo root.
+          if [ -n "$LOCAL_DIR" ]; then
+            # Add LOCAL_DIR prefix for git check-ignore
+            sed "s|^|$LOCAL_DIR/|" "$SERVER_FILES" > "$RUNNER_TEMP/server_files_prefixed.txt"
+          else
+            cp "$SERVER_FILES" "$RUNNER_TEMP/server_files_prefixed.txt"
+          fi
+
+          # Get ignored paths (git check-ignore prints only those that ARE ignored)
+          git check-ignore --stdin < "$RUNNER_TEMP/server_files_prefixed.txt" > "$IGNORED_FILES" 2>/dev/null || true
+
+          # Subtract ignored from full list, then strip LOCAL_DIR prefix back
+          comm -23 \
+            <(sort "$RUNNER_TEMP/server_files_prefixed.txt") \
+            <(sort "$IGNORED_FILES") \
+            | if [ -n "$LOCAL_DIR" ]; then
+                sed "s|^$LOCAL_DIR/||"
+              else
+                cat
+              fi \
+            > "$FILTERED_FILES"
+
+          TOTAL=$(wc -l < "$SERVER_FILES")
+          IGNORED=$(wc -l < "$IGNORED_FILES")
+          TO_DOWNLOAD=$(wc -l < "$FILTERED_FILES")
+
+          echo "=== Server files:  $TOTAL ==="
+          echo "=== Ignored:       $IGNORED ==="
+          echo "=== To download:   $TO_DOWNLOAD ==="
+
+          if ! [ -s "$FILTERED_FILES" ]; then
+            echo "::warning::No files to download after applying .gitignore filter"
+            echo "NOTHING_TO_SYNC=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: FTP DOWNLOAD
+        if: ${{ env.DEPLOY_METHOD == 'FTP' && env.NOTHING_TO_SYNC != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILTERED_FILES="$RUNNER_TEMP/to_download.txt"
+
+          # Determine local destination directory
+          if [ -n "$LOCAL_DIR" ]; then
+            DEST_DIR="./$LOCAL_DIR"
+          else
+            DEST_DIR="./"
+          fi
+
+          DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
+
+          {
+            echo "set net:timeout 30"
+            echo "set net:max-retries 5"
+            echo "set net:reconnect-interval-base 5"
+            echo "set ftp:passive-mode true"
+            echo "set ssl:verify-certificate no"
+            echo "set cmd:fail-exit true"
+
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              local_dir=$(dirname "$DEST_DIR/$file")
+              echo "mkdir -fp \"$local_dir\""
+              echo "get -O \"$local_dir\" \"$DEPLOY_PATH_STRIPPED/$file\""
+            done < "$FILTERED_FILES"
+
+            echo "quit"
+          } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
+
+          # Handle deletions: remove local files not present on server
+          if [ "${DELETE_REMOVED}" = "true" ]; then
+            SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+            # Find files tracked in git that are not on the server → delete locally
+            git ls-files | while IFS= read -r tracked; do
+              # Adjust for LOCAL_DIR prefix
+              if [ -n "$LOCAL_DIR" ]; then
+                if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
+                  rel="${tracked#"$LOCAL_DIR/"}"
+                else
+                  continue
+                fi
+              else
+                rel="$tracked"
+              fi
+              if ! grep -qxF "$rel" "$SERVER_FILES"; then
+                echo "Removing: $tracked"
+                rm -f "$tracked"
+              fi
+            done
+          fi
+
+      - name: RSYNC DOWNLOAD
+        if: ${{ env.DEPLOY_METHOD == 'RSYNC' && env.NOTHING_TO_SYNC != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILTERED_FILES="$RUNNER_TEMP/to_download.txt"
+
+          if [ -n "$LOCAL_DIR" ]; then
+            DEST_DIR="./$LOCAL_DIR/"
+          else
+            DEST_DIR="./"
+          fi
+
+          rsync -avz --progress \
+            -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
+            --files-from="$FILTERED_FILES" \
+            --ignore-missing-args \
+            --no-perms --no-owner --no-group \
+            "$DEPLOY_USER@$DEPLOY_HOST:${DEPLOY_PATH%/}/" "$DEST_DIR"
+
+          # Handle deletions: remove local files not present on server
+          if [ "${DELETE_REMOVED}" = "true" ]; then
+            SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+            git ls-files | while IFS= read -r tracked; do
+              if [ -n "$LOCAL_DIR" ]; then
+                if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
+                  rel="${tracked#"$LOCAL_DIR/"}"
+                else
+                  continue
+                fi
+              else
+                rel="$tracked"
+              fi
+              if ! grep -qxF "$rel" "$SERVER_FILES"; then
+                echo "Removing: $tracked"
+                rm -f "$tracked"
+              fi
+            done
+          fi
+
+      - name: COMMIT AND PUSH
+        if: ${{ env.NOTHING_TO_SYNC != 'true' }}
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TIMESTAMP=$(date -u +%Y-%m-%d_%H-%M-%S)
+          BRANCH="sync/${GITHUB_REF_NAME}_${TIMESTAMP}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "::warning::No changes detected after download — nothing to commit"
+            exit 0
+          fi
+
+          COMMIT_MSG="sync: import from server $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          git commit -m "$COMMIT_MSG"
+          git push origin "$BRANCH"
+
+          echo "=== Branch pushed: $BRANCH ==="
+
+      - name: CLEANUP SSH KEY
+        if: always()
+        shell: bash
+        run: |
+          [ -n "${TMP_KEY:-}" ] && [ -f "$TMP_KEY" ] && rm -f "$TMP_KEY" || true

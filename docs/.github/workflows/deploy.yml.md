@@ -1,7 +1,7 @@
 <!-- DOCGEN:START -->
-# ci-cd.yml — CI/CD деплой
+# deploy.yml — CI/CD деплой
 
-Подробная документация для workflow `.github/workflows/ci-cd.yml`.
+Подробная документация для workflow `.github/workflows/deploy.yml`.
 
 Назначение: универсальный деплой (FTP / RSYNC / GIT) с опциональной сборкой.
 
