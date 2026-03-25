@@ -3,10 +3,6 @@ name: remote-grabber
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch / environment to sync from'
-        required: true
-        type: environment
       delete_removed:
         description: 'Remove local files that no longer exist on server (true/false)'
         required: false
@@ -17,7 +13,7 @@ jobs:
   grab:
     runs-on: ubuntu-latest
 
-    environment: ${{ inputs.branch || github.ref_name }}
+    environment: ${{ github.ref_name }}
 
     permissions:
       contents: write
@@ -35,9 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch || github.ref_name }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup ssh key
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
@@ -82,13 +76,16 @@ jobs:
 
           if [ "$DEPLOY_METHOD" = "RSYNC" ]; then
             ssh -i "$TMP_KEY" \
-              -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p "$DEPLOY_PORT" \
+              -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+              -p "$DEPLOY_PORT" \
               "$DEPLOY_USER@$DEPLOY_HOST" \
               "find '$DEPLOY_PATH' -type f -printf '%P\n'" \
               > "$SERVER_FILES"
 
           elif [ "$DEPLOY_METHOD" = "FTP" ]; then
-            lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" <<LFTP > "$RUNNER_TEMP/server_files_raw.txt"
+            touch "$RUNNER_TEMP/server_files_raw.txt"
+            lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" <<LFTP > "$RUNNER_TEMP/server_files_raw.txt" &
           set net:timeout 30
           set net:max-retries 5
           set net:reconnect-interval-base 5
@@ -98,6 +95,14 @@ jobs:
           find $DEPLOY_PATH
           quit
           LFTP
+            LFTP_PID=$!
+            echo "=== Listing files on FTP server (progress every 15s) ==="
+            while kill -0 "$LFTP_PID" 2>/dev/null; do
+              sleep 15
+              COUNT=$(wc -l < "$RUNNER_TEMP/server_files_raw.txt" 2>/dev/null || echo 0)
+              echo "  ... ${COUNT} files listed so far"
+            done
+            wait "$LFTP_PID"
             # Strip the DEPLOY_PATH/ prefix so paths are relative
             DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
             sed "s|^${DEPLOY_PATH_STRIPPED}/||" "$RUNNER_TEMP/server_files_raw.txt" \
@@ -174,6 +179,7 @@ jobs:
             echo "set net:reconnect-interval-base 5"
             echo "set ftp:passive-mode true"
             echo "set ssl:verify-certificate no"
+            echo "set xfer:clobber true"
             echo "set cmd:fail-exit true"
 
             while IFS= read -r file; do
