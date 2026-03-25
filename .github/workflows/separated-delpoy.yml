@@ -90,10 +90,18 @@ jobs:
             while IFS= read -r file; do
               [ -z "$file" ] && continue
               if [ -z "$LOCAL_DIR" ]; then
-                echo "$file" >> "$UPLOAD_FILE"
+                if [ -f "./$file" ]; then
+                  echo "$file" >> "$UPLOAD_FILE"
+                else
+                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
+                fi
               elif [[ "$file" == "$LOCAL_DIR/"* ]]; then
                 stripped="${file#"$LOCAL_DIR/"}"
-                echo "$stripped" >> "$UPLOAD_FILE"
+                if [ -f "./$LOCAL_DIR/$stripped" ]; then
+                  echo "$stripped" >> "$UPLOAD_FILE"
+                else
+                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
+                fi
               fi
             done < <(git diff-tree --no-commit-id -r --name-only --diff-filter=ACMR "$commit")
 
