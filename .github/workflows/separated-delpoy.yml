@@ -124,7 +124,7 @@ jobs:
             echo "::warning::No files match DEPLOY_LOCAL_DIR='${DEPLOY_LOCAL_DIR}' in the specified commits"
           fi
 
-      - name: FTP DEPLOY
+      - name: FTP deploy
         if: ${{ env.DEPLOY_METHOD == 'FTP' }}
         shell: bash
         run: |
@@ -181,7 +181,7 @@ jobs:
             echo "quit"
           } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
 
-      - name: RSYNC DEPLOY
+      - name: RSYNC Deploy
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
         shell: bash
         run: |
@@ -219,7 +219,7 @@ jobs:
             done < "$DELETE_FILE"
           fi
 
-      - name: POST DEPLOY COMMAND
+      - name: Post deploy command
         if: ${{ env.DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
         shell: bash
         run: |
@@ -230,7 +230,7 @@ jobs:
             $DEPLOY_COMMAND
           "
 
-      - name: CLEANUP SSH KEY
+      - name: Cleanup ssh key
         if: always()
         shell: bash
         run: |

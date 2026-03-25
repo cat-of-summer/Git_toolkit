@@ -14,7 +14,7 @@ on:
         default: 'false'
 
 jobs:
-  sync:
+  grab:
     runs-on: ubuntu-latest
 
     environment: ${{ inputs.branch || github.ref_name }}
@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: SETUP SSH KEY
+      - name: Setup ssh key
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
         shell: bash
         run: |
@@ -67,7 +67,7 @@ jobs:
             sudo apt-get install -y --no-install-recommends lftp
           fi
 
-      - name: LIST SERVER FILES
+      - name: List server files
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +106,7 @@ jobs:
 
           echo "=== Total files on server: $(wc -l < "$SERVER_FILES") ==="
 
-      - name: FILTER FILES VIA GITIGNORE
+      - name: Filter files via .gitignore
         shell: bash
         run: |
           set -euo pipefail
@@ -151,7 +151,7 @@ jobs:
             echo "NOTHING_TO_SYNC=true" >> "$GITHUB_ENV"
           fi
 
-      - name: FTP DOWNLOAD
+      - name: FTP Download
         if: ${{ env.DEPLOY_METHOD == 'FTP' && env.NOTHING_TO_SYNC != 'true' }}
         shell: bash
         run: |
@@ -208,7 +208,7 @@ jobs:
             done
           fi
 
-      - name: RSYNC DOWNLOAD
+      - name: RSYNC Download
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' && env.NOTHING_TO_SYNC != 'true' }}
         shell: bash
         run: |
@@ -249,7 +249,7 @@ jobs:
             done
           fi
 
-      - name: COMMIT AND PUSH
+      - name: Commit and push
         if: ${{ env.NOTHING_TO_SYNC != 'true' }}
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
@@ -277,7 +277,7 @@ jobs:
 
           echo "=== Branch pushed: $BRANCH ==="
 
-      - name: CLEANUP SSH KEY
+      - name: Cleanup ssh key
         if: always()
         shell: bash
         run: |
