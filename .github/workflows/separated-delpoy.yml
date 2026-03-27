@@ -158,6 +158,7 @@ jobs:
             echo "set net:reconnect-interval-base 5"
             echo "set ftp:passive-mode true"
             echo "set ssl:verify-certificate no"
+            echo "set ftp:list-options -a"
             echo "set cmd:fail-exit true"
 
             if [ -s "$UPLOAD_FILE" ]; then

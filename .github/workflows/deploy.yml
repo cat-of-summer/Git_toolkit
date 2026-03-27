@@ -85,6 +85,7 @@ jobs:
           set net:reconnect-interval-base 5
           set ftp:passive-mode true
           set ssl:verify-certificate no
+          set ftp:list-options -a
           set cmd:fail-exit true
           mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' "$DEPLOY_LOCAL_DIR" "$DEPLOY_PATH"
           quit
