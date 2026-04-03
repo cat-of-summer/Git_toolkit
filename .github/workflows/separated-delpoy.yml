@@ -152,16 +152,83 @@ jobs:
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
-          {
-            echo "set net:timeout 30"
-            echo "set net:max-retries 5"
-            echo "set net:reconnect-interval-base 5"
-            echo "set ftp:passive-mode true"
-            echo "set ssl:verify-certificate no"
-            echo "set ftp:list-options -a"
-            echo "set cmd:fail-exit true"
+          # Runs an lftp session from a commands file
+          # max_retries: lftp-internal retry count per operation
+          run_lftp_session() {
+            local cmd_file="$1" max_retries="$2"
+            {
+              printf '%s\n' \
+                "set net:timeout 30" \
+                "set net:max-retries $max_retries" \
+                "set net:reconnect-interval-base 5" \
+                "set ftp:passive-mode true" \
+                "set ssl:verify-certificate no" \
+                "set ftp:list-options -a" \
+                "set cmd:fail-exit true"
+              cat "$cmd_file"
+              echo "quit"
+            } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
+          }
 
-            if [ -s "$UPLOAD_FILE" ]; then
+          # Uploads/deletes a single file: 3 bash-level retries, 1 lftp-internal retry each
+          run_lftp_single() {
+            local cmd_file="$1" label="$2"
+            local success=false
+            for attempt in 1 2 3; do
+              if run_lftp_session "$cmd_file" 1; then
+                success=true
+                break
+              else
+                echo "::warning::Per-file attempt $attempt/3 failed for '$label'"
+              fi
+            done
+            if [ "$success" = "false" ]; then
+              echo "::warning::Skipping '$label' after 3 failed attempts"
+            fi
+          }
+
+          BATCH_CMD_FILE="$RUNNER_TEMP/lftp_batch_cmds.txt"
+
+          # --- UPLOADS ---
+          if [ -s "$UPLOAD_FILE" ]; then
+            # Build a single batch script with all put commands
+            > "$BATCH_CMD_FILE"
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              if [ -z "$LOCAL_DIR" ]; then
+                src_path="./$file"
+              else
+                src_path="./$LOCAL_DIR/$file"
+              fi
+              file_dir=$(dirname "$file")
+              if [ "$file_dir" = "." ]; then
+                remote_dir="$DEPLOY_PATH"
+              else
+                remote_dir="$DEPLOY_PATH/$file_dir"
+              fi
+              echo "mkdir -fp \"$remote_dir\"" >> "$BATCH_CMD_FILE"
+              echo "put -O \"$remote_dir\" \"$src_path\"" >> "$BATCH_CMD_FILE"
+            done < "$UPLOAD_FILE"
+
+            # Attempt batch: 3 tries, 5 lftp-internal retries each
+            echo "Attempting batch upload..."
+            BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
+            batch_ok=false
+            for attempt in 1 2 3; do
+              if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
+                cat "$BATCH_LOG"
+                echo "Batch upload succeeded on attempt $attempt"
+                batch_ok=true
+                break
+              else
+                echo "::warning::Batch upload attempt $attempt/3 failed. lftp output:"
+                cat "$BATCH_LOG"
+              fi
+            done
+
+            # Fallback: upload each file individually
+            if [ "$batch_ok" = "false" ]; then
+              echo "Falling back to per-file upload..."
               while IFS= read -r file; do
                 [ -z "$file" ] && continue
                 if [ -z "$LOCAL_DIR" ]; then
@@ -175,20 +242,49 @@ jobs:
                 else
                   remote_dir="$DEPLOY_PATH/$file_dir"
                 fi
-                echo "mkdir -fp \"$remote_dir\""
-                echo "put -O \"$remote_dir\" \"$src_path\""
+                SINGLE_CMD_FILE="$RUNNER_TEMP/lftp_single_cmd.txt"
+                printf '%s\n' "mkdir -fp \"$remote_dir\"" "put -O \"$remote_dir\" \"$src_path\"" > "$SINGLE_CMD_FILE"
+                run_lftp_single "$SINGLE_CMD_FILE" "$file"
               done < "$UPLOAD_FILE"
             fi
+          fi
 
-            if [ -s "$DELETE_FILE" ]; then
+          # --- DELETES ---
+          if [ -s "$DELETE_FILE" ]; then
+            # Build a single batch script with all rm commands
+            > "$BATCH_CMD_FILE"
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              echo "rm -f \"$DEPLOY_PATH/$file\"" >> "$BATCH_CMD_FILE"
+            done < "$DELETE_FILE"
+
+            # Attempt batch delete: 3 tries, 5 lftp-internal retries each
+            echo "Attempting batch delete..."
+            BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
+            batch_ok=false
+            for attempt in 1 2 3; do
+              if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
+                cat "$BATCH_LOG"
+                echo "Batch delete succeeded on attempt $attempt"
+                batch_ok=true
+                break
+              else
+                echo "::warning::Batch delete attempt $attempt/3 failed. lftp output:"
+                cat "$BATCH_LOG"
+              fi
+            done
+
+            # Fallback: delete each file individually
+            if [ "$batch_ok" = "false" ]; then
+              echo "Falling back to per-file delete..."
               while IFS= read -r file; do
                 [ -z "$file" ] && continue
-                echo "rm -f \"$DEPLOY_PATH/$file\""
+                SINGLE_CMD_FILE="$RUNNER_TEMP/lftp_single_cmd.txt"
+                printf '%s\n' "rm -f \"$DEPLOY_PATH/$file\"" > "$SINGLE_CMD_FILE"
+                run_lftp_single "$SINGLE_CMD_FILE" "$file"
               done < "$DELETE_FILE"
             fi
-
-            echo "quit"
-          } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
+          fi
 
       - name: RSYNC Deploy
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}

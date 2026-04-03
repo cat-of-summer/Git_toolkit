@@ -74,17 +74,82 @@ jobs:
             DELETE="--delete"
           fi
 
-          lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" <<LFTP
-          set net:timeout 30
-          set net:max-retries 5
-          set net:reconnect-interval-base 5
-          set ftp:passive-mode true
-          set ssl:verify-certificate no
-          set ftp:list-options -a
-          set cmd:fail-exit true
-          mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' "$DEPLOY_LOCAL_DIR" "$DEPLOY_PATH"
-          quit
-          LFTP
+          # Runs an lftp session from a commands file
+          # max_retries: lftp-internal retry count per operation
+          run_lftp_session() {
+            local cmd_file="$1" max_retries="$2"
+            {
+              printf '%s\n' \
+                "set net:timeout 30" \
+                "set net:max-retries $max_retries" \
+                "set net:reconnect-interval-base 5" \
+                "set ftp:passive-mode true" \
+                "set ssl:verify-certificate no" \
+                "set ftp:list-options -a" \
+                "set cmd:fail-exit true"
+              cat "$cmd_file"
+              echo "quit"
+            } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
+          }
+
+          # Uploads a single file: 3 bash-level retries, 1 lftp-internal retry each
+          run_lftp_single() {
+            local cmd_file="$1" label="$2"
+            local success=false
+            for attempt in 1 2 3; do
+              if run_lftp_session "$cmd_file" 1; then
+                success=true
+                break
+              else
+                echo "::warning::Per-file attempt $attempt/3 failed for '$label'"
+              fi
+            done
+            if [ "$success" = "false" ]; then
+              echo "::warning::Skipping '$label' after 3 failed attempts"
+            fi
+          }
+
+          BATCH_CMD_FILE="$RUNNER_TEMP/lftp_batch_cmds.txt"
+          BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
+          printf '%s\n' "mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' \"$DEPLOY_LOCAL_DIR\" \"$DEPLOY_PATH\"" > "$BATCH_CMD_FILE"
+
+          # Attempt batch: 3 tries, 5 lftp-internal retries each
+          echo "Attempting batch mirror..."
+          batch_ok=false
+          for attempt in 1 2 3; do
+            if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
+              cat "$BATCH_LOG"
+              echo "Batch mirror succeeded on attempt $attempt"
+              batch_ok=true
+              break
+            else
+              echo "::warning::Batch mirror attempt $attempt/3 failed. lftp output:"
+              cat "$BATCH_LOG"
+            fi
+          done
+
+          # Fallback: per-file upload (deletions skipped in fallback mode)
+          if [ "$batch_ok" = "false" ]; then
+            echo "Falling back to per-file upload..."
+            LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
+            LOCAL_DIR="${LOCAL_DIR#./}"
+            [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
+            SRC_BASE="${LOCAL_DIR:-.}"
+
+            SINGLE_CMD_FILE="$RUNNER_TEMP/lftp_single_cmd.txt"
+            while IFS= read -r local_path; do
+              rel_path="${local_path#./}"
+              [ -n "$LOCAL_DIR" ] && rel_path="${rel_path#"$LOCAL_DIR/"}"
+              file_dir=$(dirname "$rel_path")
+              if [ "$file_dir" = "." ]; then
+                remote_dir="$DEPLOY_PATH"
+              else
+                remote_dir="$DEPLOY_PATH/$file_dir"
+              fi
+              printf '%s\n' "mkdir -fp \"$remote_dir\"" "put -O \"$remote_dir\" \"$local_path\"" > "$SINGLE_CMD_FILE"
+              run_lftp_single "$SINGLE_CMD_FILE" "$rel_path"
+            done < <(find "$SRC_BASE" \( -name '.git' -prune \) -o -type f -print)
+          fi
 
       - name: RSYNC Deploy
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
