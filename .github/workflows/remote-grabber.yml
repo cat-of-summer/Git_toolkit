@@ -9,14 +9,14 @@ on:
         type: string
         default: 'false'
 
+permissions:
+  contents: write
+
 jobs:
   grab:
     runs-on: ubuntu-latest
 
     environment: ${{ github.ref_name }}
-
-    permissions:
-      contents: write
 
     env:
       DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Setup ssh key
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
@@ -259,6 +260,7 @@ jobs:
         if: ${{ env.NOTHING_TO_SYNC != 'true' }}
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -268,6 +270,10 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config core.fileMode false
+
+          # Ensure push always uses HTTPS + GITHUB_TOKEN, regardless of how origin was cloned
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           git checkout -b "$BRANCH"
           git add -A
