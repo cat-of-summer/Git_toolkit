@@ -34,6 +34,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Configure git
+        shell: bash
+        run: |
+          git config core.fileMode false
+          git config core.autocrlf false
+
       - name: Setup ssh key
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
         shell: bash
@@ -271,12 +277,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config core.fileMode false
+          git config core.autocrlf false
 
           # Ensure push always uses HTTPS + GITHUB_TOKEN, regardless of how origin was cloned
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           git checkout -b "$BRANCH"
           git add -A
+
+          # Unstage files where the only difference is CRLF vs LF line endings
+          git diff --cached --name-only --diff-filter=M | while IFS= read -r f; do
+            if git diff --cached --ignore-cr-at-eol --quiet -- "$f"; then
+              git restore --staged "$f"
+              echo "Unstaged (CRLF-only diff): $f"
+            fi
+          done
 
           if git diff --cached --quiet; then
             echo "::warning::No changes detected after download — nothing to commit"
