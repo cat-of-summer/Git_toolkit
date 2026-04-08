@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   grab:
@@ -89,7 +88,7 @@ jobs:
               -p "$DEPLOY_PORT" \
               "$DEPLOY_USER@$DEPLOY_HOST" \
               "find '$DEPLOY_PATH' -type f -printf '%P\n'" \
-              > "$SERVER_FILES"
+              | grep -v '^\.git/' > "$SERVER_FILES"
 
           elif [ "$DEPLOY_METHOD" = "FTP" ]; then
             touch "$RUNNER_TEMP/server_files_raw.txt"
@@ -114,7 +113,7 @@ jobs:
             # Strip the DEPLOY_PATH/ prefix so paths are relative
             DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
             sed "s|^${DEPLOY_PATH_STRIPPED}/||" "$RUNNER_TEMP/server_files_raw.txt" \
-              | grep -v '^$' > "$SERVER_FILES"
+              | grep -vE '^$|^\.git/' > "$SERVER_FILES"
           fi
 
           echo "=== Total files on server: $(wc -l < "$SERVER_FILES") ==="
