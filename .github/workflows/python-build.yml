@@ -9,7 +9,21 @@ permissions:
   contents: write
 
 jobs:
+  get-branch:
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.find-branch.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: find-branch
+        run: |
+          BRANCH=$(git branch -r --contains ${{ github.sha }} | grep -v HEAD | head -1 | sed 's/.*origin\///')
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
+
   build:
+    needs: get-branch
     strategy:
       matrix:
         include:
@@ -21,6 +35,8 @@ jobs:
             suffix: macos
 
     runs-on: ${{ matrix.os }}
+
+    environment: ${{ needs.get-branch.outputs.branch }}
 
     env:
       PYTHON_VERSION:     ${{ vars.PYTHON_VERSION }}
