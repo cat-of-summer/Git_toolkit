@@ -1,0 +1,61 @@
+name: Python Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suffix: linux
+          - os: windows-latest
+            suffix: windows
+          - os: macos-latest
+            suffix: macos
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      PYTHON_VERSION:     ${{ vars.PYTHON_VERSION }}
+      BUILD_SOURCE:     ${{ vars.BUILD_SOURCE     || 'main.py' }}
+      BUILD_EXTRA_ARGS: ${{ vars.BUILD_EXTRA_ARGS || '--onefile --clean' }}
+      APPLICATION_NAME:  ${{ vars.APPLICATION_NAME  || 'application' }}
+      LOCAL_DIR:        ${{ vars.LOCAL_DIR        || './' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r ${{ env.LOCAL_DIR }}/requirements.txt
+          pip install pyinstaller
+
+      - name: Build binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.suffix }}" = "windows" ]; then
+            ARTIFACT="${APPLICATION_NAME}.exe"
+          else
+            ARTIFACT="${APPLICATION_NAME}-${{ matrix.suffix }}"
+          fi
+          cd "${LOCAL_DIR}"
+          pyinstaller ${BUILD_EXTRA_ARGS} --name "${ARTIFACT}" "${BUILD_SOURCE}"
+          echo "ARTIFACT=${ARTIFACT}" >> "${GITHUB_ENV}"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.LOCAL_DIR }}/dist/${{ env.ARTIFACT }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
