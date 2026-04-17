@@ -24,10 +24,10 @@ jobs:
 
     env:
       PYTHON_VERSION:     ${{ vars.PYTHON_VERSION }}
-      BUILD_SOURCE:     ${{ vars.BUILD_SOURCE     || 'main.py' }}
+      BUILD_SOURCE:     ${{ vars.BUILD_SOURCE || 'main.py' }}
       BUILD_EXTRA_ARGS: ${{ vars.BUILD_EXTRA_ARGS || '--onefile --clean' }}
-      APPLICATION_NAME:  ${{ vars.APPLICATION_NAME  || 'application' }}
-      LOCAL_DIR:        ${{ vars.LOCAL_DIR        || './' }}
+      APPLICATION_NAME:  ${{ vars.APPLICATION_NAME || 'application' }}
+      LOCAL_DIR:        ${{ vars.LOCAL_DIR || './' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r ${{ env.LOCAL_DIR }}/requirements.txt
+          pip install -r ${{ env.LOCAL_DIR }}requirements.txt
           pip install pyinstaller
 
       - name: Build binary
@@ -56,6 +56,6 @@ jobs:
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.LOCAL_DIR }}/dist/${{ env.ARTIFACT }}
+          files: ${{ env.LOCAL_DIR }}dist/${{ env.ARTIFACT }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
