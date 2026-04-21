@@ -1,14 +1,15 @@
 <!-- DOCGEN:START -->
 # workflows
 
+## Папки
+
+- [ci_cd](ci_cd/)
+
 ## Файлы
 
-- [deploy.yml](deploy.yml.md)
 - [docgen.yml](docgen.yml.md)
 - [minifier.yml](minifier.yml.md)
 - [python-build.yml](python-build.yml.md)
-- [remote-grabber.yml](remote-grabber.yml.md)
-- [separated-delpoy.yml](separated-delpoy.yml.md)
 
 <!-- DOCGEN:END -->
 
