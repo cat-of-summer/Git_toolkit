@@ -7,7 +7,7 @@ on:
         description: 'Mirror server state: remove repo files that no longer exist on server (true/false)'
         required: false
         type: string
-        default: 'true'
+        default: 'false'
       commits:
         description: 'Comma-separated commits to grab files from'
         required: false
@@ -31,7 +31,7 @@ jobs:
       DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
       DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD }}
-      DEPLOY_MIRROR: ${{ inputs.deploy_mirror || 'true' }}
+      DEPLOY_MIRROR: ${{ inputs.deploy_mirror || 'false' }}
       COMMITS: ${{ inputs.commits || '' }}
 
     steps:
@@ -158,23 +158,10 @@ jobs:
                 < "$TO_DOWNLOAD" > "$SERVER_FILES"
 
             elif [ "$DEPLOY_METHOD" = "FTP" ]; then
-              # Single lftp session: nlist each file; cmd:fail-exit false so missing files don't abort
-              {
-                printf '%s\n' \
-                  "set net:timeout 30" \
-                  "set net:max-retries 3" \
-                  "set net:reconnect-interval-base 5" \
-                  "set ftp:passive-mode true" \
-                  "set ssl:verify-certificate no" \
-                  "set cmd:fail-exit false"
-                while IFS= read -r file; do
-                  [ -z "$file" ] && continue
-                  echo "nlist \"${DEPLOY_PATH_STRIPPED}/${file}\""
-                done < "$TO_DOWNLOAD"
-                echo "quit"
-              } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" 2>/dev/null \
-                | sed "s|^${DEPLOY_PATH_STRIPPED}/||" \
-                | grep -v '^[[:space:]]*$' > "$SERVER_FILES" || true
+              # FTP: nlist for a single file returns empty NLST on many servers — unreliable.
+              # We attempt download of all files with xfer:fail-exit false (FTP Download step)
+              # and rebuild server_files.txt afterwards from what was actually downloaded.
+              cp "$TO_DOWNLOAD" "$SERVER_FILES"
             fi
 
             # Overwrite to_download.txt with server-verified list
@@ -295,13 +282,19 @@ jobs:
           DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
 
           {
-            echo "set net:timeout 30"
-            echo "set net:max-retries 5"
-            echo "set net:reconnect-interval-base 5"
+            echo "set net:timeout 15"
+            echo "set net:max-retries 2"
+            echo "set net:reconnect-interval-base 2"
+            echo "set net:reconnect-interval-multiplier 1"
             echo "set ftp:passive-mode true"
             echo "set ssl:verify-certificate no"
             echo "set xfer:clobber true"
-            echo "set cmd:fail-exit true"
+            # In commits mode allow individual file failures; in full sync fail fast
+            if [ "$COMMITS_MODE" = "true" ]; then
+              echo "set cmd:fail-exit false"
+            else
+              echo "set cmd:fail-exit true"
+            fi
 
             while IFS= read -r file; do
               [ -z "$file" ] && continue
@@ -312,6 +305,22 @@ jobs:
 
             echo "quit"
           } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
+
+          # In commits mode: rebuild server_files.txt from what was actually downloaded
+          # (files that failed to download = don't exist on server)
+          if [ "$COMMITS_MODE" = "true" ]; then
+            > "$RUNNER_TEMP/server_files.txt"
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              if [ -n "$LOCAL_DIR" ]; then
+                local_path="./$LOCAL_DIR/$file"
+              else
+                local_path="./$file"
+              fi
+              [ -f "$local_path" ] && echo "$file" >> "$RUNNER_TEMP/server_files.txt"
+            done < "$RUNNER_TEMP/commits_original.txt"
+            echo "=== Files actually downloaded from server: $(wc -l < "$RUNNER_TEMP/server_files.txt") ==="
+          fi
 
           # Handle deletions: remove local files not present on server
           if [ "${DEPLOY_MIRROR}" = "true" ]; then
