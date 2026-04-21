@@ -3,11 +3,16 @@ name: remote-grabber
 on:
   workflow_dispatch:
     inputs:
-      delete_removed:
-        description: 'Remove local files that no longer exist on server (true/false)'
+      deploy_mirror:
+        description: 'Mirror server state: remove repo files that no longer exist on server (true/false)'
         required: false
         type: string
-        default: 'false'
+        default: 'true'
+      commits:
+        description: 'Comma-separated commits to grab files from'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -26,7 +31,8 @@ jobs:
       DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
       DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD }}
-      DELETE_REMOVED: ${{ inputs.delete_removed || 'false' }}
+      DEPLOY_MIRROR: ${{ inputs.deploy_mirror || 'true' }}
+      COMMITS: ${{ inputs.commits || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +45,67 @@ jobs:
         run: |
           git config core.fileMode false
           git config core.autocrlf false
+
+      - name: Resolve commits files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Skip if no commits specified — use full server sync mode
+          if [ -z "$COMMITS" ]; then
+            echo "COMMITS_MODE=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "COMMITS_MODE=true" >> "$GITHUB_ENV"
+
+          # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
+          LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
+          LOCAL_DIR="${LOCAL_DIR#./}"
+          [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
+          echo "LOCAL_DIR=$LOCAL_DIR" >> "$GITHUB_ENV"
+
+          TO_DOWNLOAD="$RUNNER_TEMP/to_download.txt"
+          > "$TO_DOWNLOAD"
+
+          # Parse commits: supports commas, spaces, semicolons, tabs, newlines as separators
+          readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
+
+          for commit in "${COMMITS_ARR[@]}"; do
+            commit="${commit// /}"
+            [ -z "$commit" ] && continue
+            echo "=== Processing commit: $commit ==="
+
+            # Files added / copied / modified / renamed (deleted files are irrelevant here)
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              if [ -z "$LOCAL_DIR" ]; then
+                if [ -f "./$file" ]; then
+                  echo "$file" >> "$TO_DOWNLOAD"
+                else
+                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
+                fi
+              elif [[ "$file" == "$LOCAL_DIR/"* ]]; then
+                stripped="${file#"$LOCAL_DIR/"}"
+                if [ -f "./$LOCAL_DIR/$stripped" ]; then
+                  echo "$stripped" >> "$TO_DOWNLOAD"
+                else
+                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
+                fi
+              fi
+            done < <(git diff-tree --no-commit-id -r --name-only --diff-filter=ACMR "$commit")
+          done
+
+          # Deduplicate and save original list (before server existence check)
+          sort -u -o "$TO_DOWNLOAD" "$TO_DOWNLOAD"
+          cp "$TO_DOWNLOAD" "$RUNNER_TEMP/commits_original.txt"
+
+          echo "=== Files from commits: $(wc -l < "$TO_DOWNLOAD") ==="
+
+          if ! [ -s "$TO_DOWNLOAD" ]; then
+            echo "::warning::No files found in the specified commits"
+            echo "NOTHING_TO_SYNC=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Setup ssh key
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
@@ -72,6 +139,49 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # In commits mode: verify which files from the list exist on the server
+          if [ "$COMMITS_MODE" = "true" ]; then
+            TO_DOWNLOAD="$RUNNER_TEMP/to_download.txt"
+            SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+            > "$SERVER_FILES"
+            DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
+
+            if [ "$DEPLOY_METHOD" = "RSYNC" ]; then
+              # Single SSH connection: pipe file list to remote, output only existing files
+              ssh -i "$TMP_KEY" \
+                -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 \
+                -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+                -p "$DEPLOY_PORT" \
+                "$DEPLOY_USER@$DEPLOY_HOST" \
+                "while IFS= read -r f; do test -f \"${DEPLOY_PATH_STRIPPED}/\$f\" && echo \"\$f\"; done" \
+                < "$TO_DOWNLOAD" > "$SERVER_FILES"
+
+            elif [ "$DEPLOY_METHOD" = "FTP" ]; then
+              # Single lftp session: nlist each file; cmd:fail-exit false so missing files don't abort
+              {
+                printf '%s\n' \
+                  "set net:timeout 30" \
+                  "set net:max-retries 3" \
+                  "set net:reconnect-interval-base 5" \
+                  "set ftp:passive-mode true" \
+                  "set ssl:verify-certificate no" \
+                  "set cmd:fail-exit false"
+                while IFS= read -r file; do
+                  [ -z "$file" ] && continue
+                  echo "nlist \"${DEPLOY_PATH_STRIPPED}/${file}\""
+                done < "$TO_DOWNLOAD"
+                echo "quit"
+              } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST" 2>/dev/null \
+                | sed "s|^${DEPLOY_PATH_STRIPPED}/||" \
+                | grep -v '^[[:space:]]*$' > "$SERVER_FILES" || true
+            fi
+
+            # Overwrite to_download.txt with server-verified list
+            cp "$SERVER_FILES" "$TO_DOWNLOAD"
+            echo "=== Files from commits found on server: $(wc -l < "$SERVER_FILES") ==="
+            exit 0
+          fi
 
           # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
@@ -159,8 +269,12 @@ jobs:
           echo "=== To download:   $TO_DOWNLOAD ==="
 
           if ! [ -s "$FILTERED_FILES" ]; then
-            echo "::warning::No files to download after applying .gitignore filter"
-            echo "NOTHING_TO_SYNC=true" >> "$GITHUB_ENV"
+            if [ "$COMMITS_MODE" = "true" ] && [ "${DEPLOY_MIRROR}" = "true" ] && [ -s "$RUNNER_TEMP/commits_original.txt" ]; then
+              echo "::warning::No files to download from server, but will apply mirror deletions"
+            else
+              echo "::warning::No files to download after applying .gitignore filter"
+              echo "NOTHING_TO_SYNC=true" >> "$GITHUB_ENV"
+            fi
           fi
 
       - name: FTP Download
@@ -200,25 +314,44 @@ jobs:
           } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
 
           # Handle deletions: remove local files not present on server
-          if [ "${DELETE_REMOVED}" = "true" ]; then
-            SERVER_FILES="$RUNNER_TEMP/server_files.txt"
-            # Find files tracked in git that are not on the server → delete locally
-            git ls-files | while IFS= read -r tracked; do
-              # Adjust for LOCAL_DIR prefix
-              if [ -n "$LOCAL_DIR" ]; then
-                if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
-                  rel="${tracked#"$LOCAL_DIR/"}"
+          if [ "${DEPLOY_MIRROR}" = "true" ]; then
+            if [ "$COMMITS_MODE" != "true" ]; then
+              # Full sync mode: remove locally tracked files not present on server
+              SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+              git ls-files | while IFS= read -r tracked; do
+                # Adjust for LOCAL_DIR prefix
+                if [ -n "$LOCAL_DIR" ]; then
+                  if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
+                    rel="${tracked#"$LOCAL_DIR/"}"
+                  else
+                    continue
+                  fi
                 else
-                  continue
+                  rel="$tracked"
                 fi
-              else
-                rel="$tracked"
-              fi
-              if ! grep -qxF "$rel" "$SERVER_FILES"; then
-                echo "Removing: $tracked"
-                rm -f "$tracked"
-              fi
-            done
+                if ! grep -qxF "$rel" "$SERVER_FILES"; then
+                  echo "Removing: $tracked"
+                  rm -f "$tracked"
+                fi
+              done
+            else
+              # Commits mode: remove files that were in commits but not found on server
+              comm -23 \
+                <(sort "$RUNNER_TEMP/commits_original.txt") \
+                <(sort "$RUNNER_TEMP/server_files.txt") \
+                | while IFS= read -r file; do
+                  [ -z "$file" ] && continue
+                  if [ -n "$LOCAL_DIR" ]; then
+                    local_path="./$LOCAL_DIR/$file"
+                  else
+                    local_path="./$file"
+                  fi
+                  if [ -f "$local_path" ]; then
+                    echo "Removing: $local_path"
+                    rm -f "$local_path"
+                  fi
+                done
+            fi
           fi
 
       - name: RSYNC Download
@@ -243,23 +376,43 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST:${DEPLOY_PATH%/}/" "$DEST_DIR"
 
           # Handle deletions: remove local files not present on server
-          if [ "${DELETE_REMOVED}" = "true" ]; then
-            SERVER_FILES="$RUNNER_TEMP/server_files.txt"
-            git ls-files | while IFS= read -r tracked; do
-              if [ -n "$LOCAL_DIR" ]; then
-                if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
-                  rel="${tracked#"$LOCAL_DIR/"}"
+          if [ "${DEPLOY_MIRROR}" = "true" ]; then
+            if [ "$COMMITS_MODE" != "true" ]; then
+              # Full sync mode: remove locally tracked files not present on server
+              SERVER_FILES="$RUNNER_TEMP/server_files.txt"
+              git ls-files | while IFS= read -r tracked; do
+                if [ -n "$LOCAL_DIR" ]; then
+                  if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
+                    rel="${tracked#"$LOCAL_DIR/"}"
+                  else
+                    continue
+                  fi
                 else
-                  continue
+                  rel="$tracked"
                 fi
-              else
-                rel="$tracked"
-              fi
-              if ! grep -qxF "$rel" "$SERVER_FILES"; then
-                echo "Removing: $tracked"
-                rm -f "$tracked"
-              fi
-            done
+                if ! grep -qxF "$rel" "$SERVER_FILES"; then
+                  echo "Removing: $tracked"
+                  rm -f "$tracked"
+                fi
+              done
+            else
+              # Commits mode: remove files that were in commits but not found on server
+              comm -23 \
+                <(sort "$RUNNER_TEMP/commits_original.txt") \
+                <(sort "$RUNNER_TEMP/server_files.txt") \
+                | while IFS= read -r file; do
+                  [ -z "$file" ] && continue
+                  if [ -n "$LOCAL_DIR" ]; then
+                    local_path="./$LOCAL_DIR/$file"
+                  else
+                    local_path="./$file"
+                  fi
+                  if [ -f "$local_path" ]; then
+                    echo "Removing: $local_path"
+                    rm -f "$local_path"
+                  fi
+                done
+            fi
           fi
 
       - name: Commit and push
