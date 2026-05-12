@@ -310,6 +310,7 @@ jobs:
               --files-from="$UPLOAD_FILE" \
               --ignore-missing-args \
               --no-perms --no-owner --no-group \
+              --keep-dirlinks \
               "$SRC_DIR" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
           else
             echo "No files to upload."

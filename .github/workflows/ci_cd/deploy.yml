@@ -166,6 +166,7 @@ jobs:
             -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
             --exclude='.*' \
             --no-perms --no-owner --no-group \
+            --keep-dirlinks \
             "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
 
       - name: GIT Deploy

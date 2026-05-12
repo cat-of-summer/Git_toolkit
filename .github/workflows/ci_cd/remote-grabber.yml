@@ -184,7 +184,7 @@ jobs:
               -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
               -p "$DEPLOY_PORT" \
               "$DEPLOY_USER@$DEPLOY_HOST" \
-              "find '$DEPLOY_PATH' -type f -printf '%P\n'" \
+              "find -L '$DEPLOY_PATH' -type f -printf '%P\n'" \
               | grep -vE '^\.git/|^\.github/' > "$SERVER_FILES"
 
           elif [ "$DEPLOY_METHOD" = "FTP" ]; then
@@ -382,6 +382,7 @@ jobs:
             --files-from="$FILTERED_FILES" \
             --ignore-missing-args \
             --no-perms --no-owner --no-group \
+            --copy-links \
             "$DEPLOY_USER@$DEPLOY_HOST:${DEPLOY_PATH%/}/" "$DEST_DIR"
 
           # Handle deletions: remove local files not present on server
