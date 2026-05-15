@@ -46,6 +46,22 @@ jobs:
           git config core.fileMode false
           git config core.autocrlf false
 
+      - name: Resolve REF_COMMIT
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$COMMITS" ]; then
+            REF_COMMIT=$(git rev-parse HEAD)
+            echo "No commits specified — REF_COMMIT = HEAD = $REF_COMMIT"
+          else
+            readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
+            REF_COMMIT=$(git log --no-walk --format='%ct %H' "${COMMITS_ARR[@]}" | sort -k1 -nr | head -1 | awk '{print $2}')
+            echo "Resolved REF_COMMIT (latest by committer-date) = $REF_COMMIT"
+          fi
+
+          echo "REF_COMMIT=$REF_COMMIT" >> "$GITHUB_ENV"
+
       - name: Resolve commits files
         shell: bash
         run: |
@@ -66,7 +82,9 @@ jobs:
           echo "LOCAL_DIR=$LOCAL_DIR" >> "$GITHUB_ENV"
 
           TO_DOWNLOAD="$RUNNER_TEMP/to_download.txt"
+          ALL_FILES="$RUNNER_TEMP/all_files.txt"
           > "$TO_DOWNLOAD"
+          > "$ALL_FILES"
 
           # Parse commits: supports commas, spaces, semicolons, tabs, newlines as separators
           readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
@@ -75,32 +93,36 @@ jobs:
             commit="${commit// /}"
             [ -z "$commit" ] && continue
             echo "=== Processing commit: $commit ==="
-
-            # Files added / copied / modified / renamed (deleted files are irrelevant here)
-            while IFS= read -r file; do
-              [ -z "$file" ] && continue
-              if [ -z "$LOCAL_DIR" ]; then
-                if [ -f "./$file" ]; then
-                  echo "$file" >> "$TO_DOWNLOAD"
-                else
-                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
-                fi
-              elif [[ "$file" == "$LOCAL_DIR/"* ]]; then
-                stripped="${file#"$LOCAL_DIR/"}"
-                if [ -f "./$LOCAL_DIR/$stripped" ]; then
-                  echo "$stripped" >> "$TO_DOWNLOAD"
-                else
-                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
-                fi
-              fi
-            done < <(git diff-tree --no-commit-id -r --name-only --diff-filter=ACMR "$commit")
+            # Every path touched in this commit (any change type)
+            git diff-tree --no-commit-id -r --name-only "$commit" >> "$ALL_FILES"
           done
+
+          sort -u -o "$ALL_FILES" "$ALL_FILES"
+
+          # Keep only paths that still exist at REF_COMMIT (latest of the listed commits).
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            if [ -z "$LOCAL_DIR" ]; then
+              if git cat-file -e "$REF_COMMIT:$file" 2>/dev/null; then
+                echo "$file" >> "$TO_DOWNLOAD"
+              else
+                echo "::warning::Skipping '$file': not present at REF_COMMIT $REF_COMMIT"
+              fi
+            elif [[ "$file" == "$LOCAL_DIR/"* ]]; then
+              stripped="${file#"$LOCAL_DIR/"}"
+              if git cat-file -e "$REF_COMMIT:$file" 2>/dev/null; then
+                echo "$stripped" >> "$TO_DOWNLOAD"
+              else
+                echo "::warning::Skipping '$file': not present at REF_COMMIT $REF_COMMIT"
+              fi
+            fi
+          done < "$ALL_FILES"
 
           # Deduplicate and save original list (before server existence check)
           sort -u -o "$TO_DOWNLOAD" "$TO_DOWNLOAD"
           cp "$TO_DOWNLOAD" "$RUNNER_TEMP/commits_original.txt"
 
-          echo "=== Files from commits: $(wc -l < "$TO_DOWNLOAD") ==="
+          echo "=== Files from commits (alive at REF_COMMIT): $(wc -l < "$TO_DOWNLOAD") ==="
 
           if ! [ -s "$TO_DOWNLOAD" ]; then
             echo "::warning::No files found in the specified commits"

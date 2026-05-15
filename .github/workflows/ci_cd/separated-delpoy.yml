@@ -9,7 +9,7 @@ on:
         type: string
         default: ''
       deploy_mirror:
-        description: 'Delete files removed in these commits (true/false)'
+        description: 'Delete from server files that exist in candidate set but are missing at REF_COMMIT (true/false)'
         required: false
         type: string
         default: 'true'
@@ -37,6 +37,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve REF_COMMIT
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$COMMITS" ]; then
+            REF_COMMIT=$(git rev-parse HEAD)
+            echo "No commits specified — REF_COMMIT = HEAD = $REF_COMMIT"
+          else
+            readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
+            REF_COMMIT=$(git log --no-walk --format='%ct %H' "${COMMITS_ARR[@]}" | sort -k1 -nr | head -1 | awk '{print $2}')
+            echo "Resolved REF_COMMIT (latest by committer-date) = $REF_COMMIT"
+          fi
+
+          echo "REF_COMMIT=$REF_COMMIT" >> "$GITHUB_ENV"
+
+          HEAD_COMMIT=$(git rev-parse HEAD)
+          if [ "$REF_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "Checking out REF_COMMIT (HEAD was $HEAD_COMMIT)"
+            git checkout --force --detach "$REF_COMMIT"
+          fi
 
       - name: SETUP SSH KEY
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' }}
@@ -70,74 +92,65 @@ jobs:
         run: |
           set -euo pipefail
 
-          # If no commits — full deploy mode
-          if [ -z "$COMMITS" ]; then
-            echo "FULL_DEPLOY=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
           UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
           DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
+          ALL_FILES="$RUNNER_TEMP/all_files.txt"
           > "$UPLOAD_FILE"
           > "$DELETE_FILE"
+          > "$ALL_FILES"
 
           # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
-          # Parse commits: supports commas, spaces, tabs, newlines as separators
-          readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
+          # Build the candidate set: every path ever touched in the relevant commits.
+          if [ -z "$COMMITS" ]; then
+            echo "=== Full deploy mode: collecting all paths ever touched in history ==="
+            git log --pretty=format: --name-only | grep -v '^$' | sort -u > "$ALL_FILES" || true
+          else
+            readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
+            for commit in "${COMMITS_ARR[@]}"; do
+              commit="${commit// /}"
+              [ -z "$commit" ] && continue
+              echo "=== Processing commit: $commit ==="
+              git diff-tree --no-commit-id -r --name-only "$commit" >> "$ALL_FILES"
+            done
+            sort -u -o "$ALL_FILES" "$ALL_FILES"
+          fi
 
-          for commit in "${COMMITS_ARR[@]}"; do
-            commit="${commit// /}"
-            [ -z "$commit" ] && continue
-            echo "=== Processing commit: $commit ==="
+          echo "=== Candidate files: $(wc -l < "$ALL_FILES") ==="
 
-            # Files added / copied / modified / renamed
-            while IFS= read -r file; do
-              [ -z "$file" ] && continue
-              if [ -z "$LOCAL_DIR" ]; then
-                if [ -f "./$file" ]; then
-                  echo "$file" >> "$UPLOAD_FILE"
-                else
-                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
-                fi
-              elif [[ "$file" == "$LOCAL_DIR/"* ]]; then
-                stripped="${file#"$LOCAL_DIR/"}"
-                if [ -f "./$LOCAL_DIR/$stripped" ]; then
-                  echo "$stripped" >> "$UPLOAD_FILE"
-                else
-                  echo "::warning::Skipping '$file': not present in HEAD (deleted in a later commit?)"
-                fi
-              fi
-            done < <(git diff-tree --no-commit-id -r --name-only --diff-filter=ACMR "$commit")
-
-            # Files deleted — collected only when DEPLOY_MIRROR=true
-            if [ "${DEPLOY_MIRROR}" = "true" ]; then
-              while IFS= read -r file; do
-                [ -z "$file" ] && continue
-                if [ -z "$LOCAL_DIR" ]; then
-                  echo "$file" >> "$DELETE_FILE"
-                elif [[ "$file" == "$LOCAL_DIR/"* ]]; then
-                  stripped="${file#"$LOCAL_DIR/"}"
-                  echo "$stripped" >> "$DELETE_FILE"
-                fi
-              done < <(git diff-tree --no-commit-id -r --name-only --diff-filter=D "$commit")
+          # Classify by state at REF_COMMIT
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            # Apply LOCAL_DIR scope filter
+            if [ -n "$LOCAL_DIR" ]; then
+              [[ "$file" == "$LOCAL_DIR/"* ]] || continue
+              rel="${file#"$LOCAL_DIR/"}"
+            else
+              rel="$file"
             fi
-          done
 
-          # Deduplicate
+            if git cat-file -e "$REF_COMMIT:$file" 2>/dev/null; then
+              echo "$rel" >> "$UPLOAD_FILE"
+            else
+              if [ "${DEPLOY_MIRROR}" = "true" ]; then
+                echo "$rel" >> "$DELETE_FILE"
+              fi
+            fi
+          done < "$ALL_FILES"
+
           sort -u -o "$UPLOAD_FILE" "$UPLOAD_FILE"
           sort -u -o "$DELETE_FILE" "$DELETE_FILE"
 
-          echo "--- Files to upload ---"
+          echo "--- Files to upload: $(wc -l < "$UPLOAD_FILE") ---"
           cat "$UPLOAD_FILE"
-          echo "--- Files to delete ---"
+          echo "--- Files to delete: $(wc -l < "$DELETE_FILE") ---"
           cat "$DELETE_FILE"
 
           if ! [ -s "$UPLOAD_FILE" ] && ! [ -s "$DELETE_FILE" ]; then
-            echo "::warning::No files match DEPLOY_LOCAL_DIR='${DEPLOY_LOCAL_DIR}' in the specified commits"
+            echo "::warning::No files match DEPLOY_LOCAL_DIR='${DEPLOY_LOCAL_DIR}'"
           fi
 
       - name: FTP deploy
@@ -195,44 +208,8 @@ jobs:
           BATCH_CMD_FILE="$RUNNER_TEMP/lftp_batch_cmds.txt"
           BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
 
-          # --- FULL DEPLOY (no commits specified) ---
-          if [ "${FULL_DEPLOY:-false}" = "true" ]; then
-            DELETE=""
-            if [ "${DEPLOY_MIRROR}" = "true" ]; then
-              DELETE="--delete"
-            fi
-
-            printf '%s\n' "mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' \"$DEPLOY_LOCAL_DIR\" \"$DEPLOY_PATH\"" > "$BATCH_CMD_FILE"
-
-            echo "Attempting batch mirror..."
-            batch_ok=false
-            for attempt in 1 2 3; do
-              if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
-                cat "$BATCH_LOG"
-                echo "Batch mirror succeeded on attempt $attempt"
-                batch_ok=true
-                break
-              else
-                echo "::warning::Batch mirror attempt $attempt/3 failed. lftp output:"
-                cat "$BATCH_LOG"
-              fi
-            done
-
-            if [ "$batch_ok" = "false" ]; then
-              echo "Falling back to per-file upload..."
-              SRC_BASE="${LOCAL_DIR:-.}"
-              SINGLE_CMD_FILE="$RUNNER_TEMP/lftp_single_cmd.txt"
-              while IFS= read -r local_path; do
-                rel_path="${local_path#./}"
-                [ -n "$LOCAL_DIR" ] && rel_path="${rel_path#"$LOCAL_DIR/"}"
-                file_dir=$(dirname "$rel_path")
-                if [ "$file_dir" = "." ]; then remote_dir="$DEPLOY_PATH"; else remote_dir="$DEPLOY_PATH/$file_dir"; fi
-                printf '%s\n' "mkdir -fp \"$remote_dir\"" "put -O \"$remote_dir\" \"$local_path\"" > "$SINGLE_CMD_FILE"
-                run_lftp_single "$SINGLE_CMD_FILE" "$rel_path"
-              done < <(find "$SRC_BASE" \( -name '.git' -prune \) -o -type f -print)
-            fi
-            exit 0
-          fi
+          UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
+          DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
 
           # --- UPLOADS ---
           if [ -s "$UPLOAD_FILE" ]; then
@@ -338,21 +315,6 @@ jobs:
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
-
-          # --- FULL DEPLOY (no commits specified) ---
-          if [ "${FULL_DEPLOY:-false}" = "true" ]; then
-            DELETE=""
-            if [ "${DEPLOY_MIRROR}" = "true" ]; then
-              DELETE="--delete"
-            fi
-            rsync -avz --progress $DELETE \
-              -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
-              --exclude='.*' \
-              --no-perms --no-owner --no-group \
-              --keep-dirlinks \
-              "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
-            exit 0
-          fi
 
           UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
           DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
