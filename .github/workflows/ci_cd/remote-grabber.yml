@@ -3,16 +3,16 @@ name: remote-grabber
 on:
   workflow_dispatch:
     inputs:
-      deploy_mirror:
-        description: 'Mirror server state: remove repo files that no longer exist on server (true/false)'
-        required: false
-        type: string
-        default: 'false'
       commits:
         description: 'Comma-separated commits to grab files from'
         required: false
         type: string
         default: ''
+      deploy_mirror:
+        description: 'Mirror server state: remove repo files that no longer exist on server (true/false)'
+        required: false
+        type: string
+        default: 'false'
 
 permissions:
   contents: write

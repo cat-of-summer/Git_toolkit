@@ -5,8 +5,9 @@ on:
     inputs:
       commits:
         description: 'Comma-separated commits to deploy'
-        required: true
+        required: false
         type: string
+        default: ''
       deploy_mirror:
         description: 'Delete files removed in these commits (true/false)'
         required: false
@@ -30,6 +31,7 @@ jobs:
       DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD }}
       BUILD_COMMAND: ${{ vars.BUILD_COMMAND }}
       DEPLOY_COMMAND: ${{ vars.DEPLOY_COMMAND }}
+      COMMITS: ${{ inputs.commits || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +70,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # If no commits — full deploy mode
+          if [ -z "$COMMITS" ]; then
+            echo "FULL_DEPLOY=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
           UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
           DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
           > "$UPLOAD_FILE"
@@ -79,7 +87,7 @@ jobs:
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
           # Parse commits: supports commas, spaces, tabs, newlines as separators
-          readarray -t COMMITS_ARR < <(echo "${{ inputs.commits }}" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
+          readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
 
           for commit in "${COMMITS_ARR[@]}"; do
             commit="${commit// /}"
@@ -145,9 +153,6 @@ jobs:
             sudo apt-get install -y --no-install-recommends lftp
           fi
 
-          UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
-          DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
-
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
@@ -188,6 +193,46 @@ jobs:
           }
 
           BATCH_CMD_FILE="$RUNNER_TEMP/lftp_batch_cmds.txt"
+          BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
+
+          # --- FULL DEPLOY (no commits specified) ---
+          if [ "${FULL_DEPLOY:-false}" = "true" ]; then
+            DELETE=""
+            if [ "${DEPLOY_MIRROR}" = "true" ]; then
+              DELETE="--delete"
+            fi
+
+            printf '%s\n' "mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' \"$DEPLOY_LOCAL_DIR\" \"$DEPLOY_PATH\"" > "$BATCH_CMD_FILE"
+
+            echo "Attempting batch mirror..."
+            batch_ok=false
+            for attempt in 1 2 3; do
+              if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
+                cat "$BATCH_LOG"
+                echo "Batch mirror succeeded on attempt $attempt"
+                batch_ok=true
+                break
+              else
+                echo "::warning::Batch mirror attempt $attempt/3 failed. lftp output:"
+                cat "$BATCH_LOG"
+              fi
+            done
+
+            if [ "$batch_ok" = "false" ]; then
+              echo "Falling back to per-file upload..."
+              SRC_BASE="${LOCAL_DIR:-.}"
+              SINGLE_CMD_FILE="$RUNNER_TEMP/lftp_single_cmd.txt"
+              while IFS= read -r local_path; do
+                rel_path="${local_path#./}"
+                [ -n "$LOCAL_DIR" ] && rel_path="${rel_path#"$LOCAL_DIR/"}"
+                file_dir=$(dirname "$rel_path")
+                if [ "$file_dir" = "." ]; then remote_dir="$DEPLOY_PATH"; else remote_dir="$DEPLOY_PATH/$file_dir"; fi
+                printf '%s\n' "mkdir -fp \"$remote_dir\"" "put -O \"$remote_dir\" \"$local_path\"" > "$SINGLE_CMD_FILE"
+                run_lftp_single "$SINGLE_CMD_FILE" "$rel_path"
+              done < <(find "$SRC_BASE" \( -name '.git' -prune \) -o -type f -print)
+            fi
+            exit 0
+          fi
 
           # --- UPLOADS ---
           if [ -s "$UPLOAD_FILE" ]; then
@@ -212,7 +257,6 @@ jobs:
 
             # Attempt batch: 3 tries, 5 lftp-internal retries each
             echo "Attempting batch upload..."
-            BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
             batch_ok=false
             for attempt in 1 2 3; do
               if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
@@ -260,7 +304,6 @@ jobs:
 
             # Attempt batch delete: 3 tries, 5 lftp-internal retries each
             echo "Attempting batch delete..."
-            BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
             batch_ok=false
             for attempt in 1 2 3; do
               if run_lftp_session "$BATCH_CMD_FILE" 5 >"$BATCH_LOG" 2>&1; then
@@ -292,12 +335,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
-          DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
-
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
+
+          # --- FULL DEPLOY (no commits specified) ---
+          if [ "${FULL_DEPLOY:-false}" = "true" ]; then
+            DELETE=""
+            if [ "${DEPLOY_MIRROR}" = "true" ]; then
+              DELETE="--delete"
+            fi
+            rsync -avz --progress $DELETE \
+              -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
+              --exclude='.*' \
+              --no-perms --no-owner --no-group \
+              --keep-dirlinks \
+              "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
+            exit 0
+          fi
+
+          UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
+          DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
+
           if [ -z "$LOCAL_DIR" ]; then
             SRC_DIR="./"
           else
