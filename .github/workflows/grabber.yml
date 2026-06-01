@@ -1,4 +1,4 @@
-name: remote-grabber
+name: grabber
 
 on:
   workflow_dispatch:
