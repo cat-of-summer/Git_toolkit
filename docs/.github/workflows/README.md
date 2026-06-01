@@ -1,15 +1,14 @@
 <!-- DOCGEN:START -->
 # workflows
 
-## Папки
-
-- [ci_cd](ci_cd/)
-
 ## Файлы
 
+- [ci-cd.yml](ci-cd.yml.md)
 - [docgen.yml](docgen.yml.md)
+- [grabber.yml](grabber.yml.md)
 - [minifier.yml](minifier.yml.md)
 - [python-build.yml](python-build.yml.md)
+- [release.yml](release.yml.md)
 
 <!-- DOCGEN:END -->
 
