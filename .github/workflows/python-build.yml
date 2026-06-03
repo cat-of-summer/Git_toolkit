@@ -1,15 +1,14 @@
 name: Python Build
 
 on:
-  push:
-    tags:
-      - 'v*'
+  create:
 
 permissions:
   contents: write
 
 jobs:
   get-branch:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
     runs-on: ubuntu-latest
     outputs:
       branch: ${{ steps.find-branch.outputs.branch }}

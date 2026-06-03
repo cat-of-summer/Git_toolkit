@@ -1,14 +1,14 @@
 name: release
 
 on:
-  push:
-    tags: ['v*']
+  create:
 
 permissions:
   contents: write
 
 jobs:
   get-branch:
+    if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     outputs:
       branch: ${{ steps.find-branch.outputs.branch }}
