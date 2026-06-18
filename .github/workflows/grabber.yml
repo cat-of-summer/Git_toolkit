@@ -58,6 +58,18 @@ jobs:
             readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
             REF_COMMIT=$(git log --no-walk --format='%ct %H' "${COMMITS_ARR[@]}" | sort -k1 -nr | head -1 | awk '{print $2}')
             echo "Resolved REF_COMMIT (latest by committer-date) = $REF_COMMIT"
+
+            if [ "${#COMMITS_ARR[@]}" -eq 1 ]; then
+              MERGE_BASE="${COMMITS_ARR[0]}"
+            else
+              MERGE_BASE=$(git merge-base --octopus "${COMMITS_ARR[@]}")
+            fi
+            if BASE_COMMIT=$(git rev-parse --verify --quiet "${MERGE_BASE}^"); then
+              echo "BASE_COMMIT (parent of merge-base $MERGE_BASE) = $BASE_COMMIT"
+              echo "BASE_COMMIT=$BASE_COMMIT" >> "$GITHUB_ENV"
+            else
+              echo "::warning::Cannot resolve parent of $MERGE_BASE (root commit?) — sync branch will fall back to HEAD"
+            fi
           fi
 
           echo "REF_COMMIT=$REF_COMMIT" >> "$GITHUB_ENV"
@@ -67,7 +79,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Skip if no commits specified — use full server sync mode
           if [ -z "$COMMITS" ]; then
             echo "COMMITS_MODE=false" >> "$GITHUB_ENV"
             exit 0
@@ -75,7 +86,6 @@ jobs:
 
           echo "COMMITS_MODE=true" >> "$GITHUB_ENV"
 
-          # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
@@ -86,20 +96,17 @@ jobs:
           > "$TO_DOWNLOAD"
           > "$ALL_FILES"
 
-          # Parse commits: supports commas, spaces, semicolons, tabs, newlines as separators
           readarray -t COMMITS_ARR < <(echo "$COMMITS" | tr ',; \t\r\n' '\n' | tr -s '\n' | grep -v '^[[:space:]]*$')
 
           for commit in "${COMMITS_ARR[@]}"; do
             commit="${commit// /}"
             [ -z "$commit" ] && continue
             echo "=== Processing commit: $commit ==="
-            # Every path touched in this commit (any change type)
             git diff-tree --no-commit-id -r --name-only "$commit" >> "$ALL_FILES"
           done
 
           sort -u -o "$ALL_FILES" "$ALL_FILES"
 
-          # Keep only paths that still exist at REF_COMMIT (latest of the listed commits).
           while IFS= read -r file; do
             [ -z "$file" ] && continue
             if [ -z "$LOCAL_DIR" ]; then
@@ -118,7 +125,6 @@ jobs:
             fi
           done < "$ALL_FILES"
 
-          # Deduplicate and save original list (before server existence check)
           sort -u -o "$TO_DOWNLOAD" "$TO_DOWNLOAD"
           cp "$TO_DOWNLOAD" "$RUNNER_TEMP/commits_original.txt"
 
@@ -144,7 +150,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-lftp
+          key: ${{ runner.os }}-apt-lftp-v2
+
+      - name: Keep apt packages for caching
+        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
+        shell: bash
+        run: echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99keep-cache >/dev/null
 
       - name: Install lftp
         if: ${{ env.DEPLOY_METHOD == 'FTP' }}
@@ -162,7 +173,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # In commits mode: verify which files from the list exist on the server
           if [ "$COMMITS_MODE" = "true" ]; then
             TO_DOWNLOAD="$RUNNER_TEMP/to_download.txt"
             SERVER_FILES="$RUNNER_TEMP/server_files.txt"
@@ -170,7 +180,6 @@ jobs:
             DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
 
             if [ "$DEPLOY_METHOD" = "RSYNC" ]; then
-              # Single SSH connection: pipe file list to remote, output only existing files
               ssh -i "$TMP_KEY" \
                 -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 \
                 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
@@ -180,19 +189,14 @@ jobs:
                 < "$TO_DOWNLOAD" > "$SERVER_FILES"
 
             elif [ "$DEPLOY_METHOD" = "FTP" ]; then
-              # FTP: nlist for a single file returns empty NLST on many servers — unreliable.
-              # We attempt download of all files with xfer:fail-exit false (FTP Download step)
-              # and rebuild server_files.txt afterwards from what was actually downloaded.
               cp "$TO_DOWNLOAD" "$SERVER_FILES"
             fi
 
-            # Overwrite to_download.txt with server-verified list
             cp "$SERVER_FILES" "$TO_DOWNLOAD"
             echo "=== Files from commits found on server: $(wc -l < "$SERVER_FILES") ==="
             exit 0
           fi
 
-          # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
@@ -229,7 +233,6 @@ jobs:
               echo "  ... ${COUNT} files listed so far"
             done
             wait "$LFTP_PID"
-            # Strip the DEPLOY_PATH/ prefix so paths are relative
             DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
             sed "s|^${DEPLOY_PATH_STRIPPED}/||" "$RUNNER_TEMP/server_files_raw.txt" \
               | grep -vE '^$|^\.git/|^\.github/' > "$SERVER_FILES"
@@ -246,19 +249,14 @@ jobs:
           FILTERED_FILES="$RUNNER_TEMP/to_download.txt"
           IGNORED_FILES="$RUNNER_TEMP/ignored.txt"
 
-          # If DEPLOY_LOCAL_DIR is set, server paths are relative to it.
-          # For git check-ignore we need paths relative to repo root.
           if [ -n "$LOCAL_DIR" ]; then
-            # Add LOCAL_DIR prefix for git check-ignore
             sed "s|^|$LOCAL_DIR/|" "$SERVER_FILES" > "$RUNNER_TEMP/server_files_prefixed.txt"
           else
             cp "$SERVER_FILES" "$RUNNER_TEMP/server_files_prefixed.txt"
           fi
 
-          # Get ignored paths (git check-ignore prints only those that ARE ignored)
           git check-ignore --stdin < "$RUNNER_TEMP/server_files_prefixed.txt" > "$IGNORED_FILES" 2>/dev/null || true
 
-          # Subtract ignored from full list, then strip LOCAL_DIR prefix back
           comm -23 \
             <(sort "$RUNNER_TEMP/server_files_prefixed.txt") \
             <(sort "$IGNORED_FILES") \
@@ -294,7 +292,6 @@ jobs:
 
           FILTERED_FILES="$RUNNER_TEMP/to_download.txt"
 
-          # Determine local destination directory
           if [ -n "$LOCAL_DIR" ]; then
             DEST_DIR="./$LOCAL_DIR"
           else
@@ -311,7 +308,7 @@ jobs:
             echo "set ftp:passive-mode true"
             echo "set ssl:verify-certificate no"
             echo "set xfer:clobber true"
-            # In commits mode allow individual file failures; in full sync fail fast
+
             if [ "$COMMITS_MODE" = "true" ]; then
               echo "set cmd:fail-exit false"
             else
@@ -328,8 +325,6 @@ jobs:
             echo "quit"
           } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
 
-          # In commits mode: rebuild server_files.txt from what was actually downloaded
-          # (files that failed to download = don't exist on server)
           if [ "$COMMITS_MODE" = "true" ]; then
             > "$RUNNER_TEMP/server_files.txt"
             while IFS= read -r file; do
@@ -344,13 +339,10 @@ jobs:
             echo "=== Files actually downloaded from server: $(wc -l < "$RUNNER_TEMP/server_files.txt") ==="
           fi
 
-          # Handle deletions: remove local files not present on server
           if [ "${DEPLOY_MIRROR}" = "true" ]; then
             if [ "$COMMITS_MODE" != "true" ]; then
-              # Full sync mode: remove locally tracked files not present on server
               SERVER_FILES="$RUNNER_TEMP/server_files.txt"
               git ls-files | while IFS= read -r tracked; do
-                # Adjust for LOCAL_DIR prefix
                 if [ -n "$LOCAL_DIR" ]; then
                   if [[ "$tracked" == "$LOCAL_DIR/"* ]]; then
                     rel="${tracked#"$LOCAL_DIR/"}"
@@ -365,23 +357,6 @@ jobs:
                   rm -f "$tracked"
                 fi
               done
-            else
-              # Commits mode: remove files that were in commits but not found on server
-              comm -23 \
-                <(sort "$RUNNER_TEMP/commits_original.txt") \
-                <(sort "$RUNNER_TEMP/server_files.txt") \
-                | while IFS= read -r file; do
-                  [ -z "$file" ] && continue
-                  if [ -n "$LOCAL_DIR" ]; then
-                    local_path="./$LOCAL_DIR/$file"
-                  else
-                    local_path="./$file"
-                  fi
-                  if [ -f "$local_path" ]; then
-                    echo "Removing: $local_path"
-                    rm -f "$local_path"
-                  fi
-                done
             fi
           fi
 
@@ -407,10 +382,8 @@ jobs:
             --copy-links \
             "$DEPLOY_USER@$DEPLOY_HOST:${DEPLOY_PATH%/}/" "$DEST_DIR"
 
-          # Handle deletions: remove local files not present on server
           if [ "${DEPLOY_MIRROR}" = "true" ]; then
             if [ "$COMMITS_MODE" != "true" ]; then
-              # Full sync mode: remove locally tracked files not present on server
               SERVER_FILES="$RUNNER_TEMP/server_files.txt"
               git ls-files | while IFS= read -r tracked; do
                 if [ -n "$LOCAL_DIR" ]; then
@@ -427,23 +400,6 @@ jobs:
                   rm -f "$tracked"
                 fi
               done
-            else
-              # Commits mode: remove files that were in commits but not found on server
-              comm -23 \
-                <(sort "$RUNNER_TEMP/commits_original.txt") \
-                <(sort "$RUNNER_TEMP/server_files.txt") \
-                | while IFS= read -r file; do
-                  [ -z "$file" ] && continue
-                  if [ -n "$LOCAL_DIR" ]; then
-                    local_path="./$LOCAL_DIR/$file"
-                  else
-                    local_path="./$file"
-                  fi
-                  if [ -f "$local_path" ]; then
-                    echo "Removing: $local_path"
-                    rm -f "$local_path"
-                  fi
-                done
             fi
           fi
 
@@ -464,13 +420,42 @@ jobs:
           git config core.fileMode false
           git config core.autocrlf false
 
-          # Ensure push always uses HTTPS + GITHUB_TOKEN, regardless of how origin was cloned
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          git checkout -b "$BRANCH"
+          if [ "$COMMITS_MODE" = "true" ] && [ -n "${BASE_COMMIT:-}" ]; then
+            PAYLOAD="$RUNNER_TEMP/payload"
+            rm -rf "$PAYLOAD"; mkdir -p "$PAYLOAD"
+            while IFS= read -r file; do
+              [ -z "$file" ] && continue
+              if [ -n "$LOCAL_DIR" ]; then rel="$LOCAL_DIR/$file"; else rel="$file"; fi
+              [ -f "./$rel" ] || continue
+              mkdir -p "$PAYLOAD/$(dirname "$rel")"
+              cp "./$rel" "$PAYLOAD/$rel"
+            done < "$RUNNER_TEMP/server_files.txt"
+
+            git checkout -f -B "$BRANCH" "$BASE_COMMIT"
+
+            if [ -d "$PAYLOAD" ]; then
+              (cd "$PAYLOAD" && find . -type f) | while IFS= read -r p; do
+                p="${p#./}"
+                mkdir -p "$(dirname "./$p")"
+                cp "$PAYLOAD/$p" "./$p"
+              done
+            fi
+
+            if [ "${DEPLOY_MIRROR}" = "true" ]; then
+              comm -23 <(sort "$RUNNER_TEMP/commits_original.txt") <(sort "$RUNNER_TEMP/server_files.txt") \
+                | while IFS= read -r file; do
+                    [ -z "$file" ] && continue
+                    if [ -n "$LOCAL_DIR" ]; then lp="./$LOCAL_DIR/$file"; else lp="./$file"; fi
+                    [ -f "$lp" ] && { echo "Removing: $lp"; rm -f "$lp"; }
+                  done
+            fi
+          else
+            git checkout -b "$BRANCH"
+          fi
           git add -A
 
-          # Unstage files where the only difference is CRLF vs LF line endings
           git diff --cached --name-only --diff-filter=M | while IFS= read -r f; do
             if git diff --cached --ignore-cr-at-eol --quiet -- "$f"; then
               git restore --staged "$f"

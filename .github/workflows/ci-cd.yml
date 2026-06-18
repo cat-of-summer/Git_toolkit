@@ -16,12 +16,148 @@ on:
         required: false
         type: string
         default: 'true'
+  create:
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
 
 jobs:
-  ci:
+  # Resolve the GitHub Environment name (= branch). For tags the branch is found
+  # via the commit, mirroring release.yml's get-branch job; otherwise it is the ref name.
+  get-branch:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Checkout
+        if: ${{ github.ref_type == 'tag' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve environment
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            BRANCH=$(git branch -r --contains "${{ github.sha }}" | grep -v HEAD | head -1 | sed 's#.*origin/##' | tr -d '[:space:]')
+          else
+            BRANCH="${{ github.ref_name }}"
+          fi
+          echo "Environment resolved to: '$BRANCH'"
+          echo "environment=$BRANCH" >> "$GITHUB_OUTPUT"
+
+  # Read environment-scoped vars (impossible in job-level `if`) and emit gating flags.
+  # run_ci / run_cd drive whether ci / cd run at all (grey/skipped when false).
+  gate:
+    needs: get-branch
     runs-on: ubuntu-latest
 
-    environment: ${{ github.ref_name }}
+    environment: ${{ needs.get-branch.outputs.environment }}
+
+    outputs:
+      run_ci: ${{ steps.decide.outputs.run_ci }}
+      run_cd: ${{ steps.decide.outputs.run_cd }}
+      scope: ${{ steps.decide.outputs.scope }}
+      commits: ${{ steps.decide.outputs.commits }}
+
+    env:
+      ACTION_TRIGGER: ${{ vars.ACTION_TRIGGER || 'DISPATCH' }}
+      BUILD_COMMAND: ${{ vars.BUILD_COMMAND }}
+      CI_COMMAND: ${{ vars.CI_COMMAND }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD || 'COMMAND' }}
+      DEPLOY_LAST_COMMITS: ${{ vars.DEPLOY_LAST_COMMITS || 'false' }}
+
+    steps:
+      - name: Decide what to run
+        id: decide
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_COMMITS: ${{ inputs.commits }}
+          PUSH_COMMITS: ${{ join(github.event.commits.*.id, ',') }}
+        run: |
+          set -euo pipefail
+
+          # ACTION_TRIGGER (per-environment): DISPATCH (default) / PUSH / RELEASE.
+          #   workflow_dispatch -> always active (explicit manual run)
+          #   push on a branch  -> active only when ACTION_TRIGGER=PUSH
+          #   create of a tag   -> active only when ACTION_TRIGGER=RELEASE
+          #   pull_request      -> CI only (never deploys)
+          ACTIVE=false
+          PR=false
+          case "$EVENT" in
+            workflow_dispatch) ACTIVE=true ;;
+            pull_request)      PR=true ;;
+            push)   [ "$REF_TYPE" = "branch" ] && [ "$ACTION_TRIGGER" = "PUSH" ]    && ACTIVE=true || true ;;
+            create) [ "$REF_TYPE" = "tag" ]    && [ "$ACTION_TRIGGER" = "RELEASE" ] && ACTIVE=true || true ;;
+          esac
+
+          # CI is configured if at least one command is set.
+          HAVE_CI=false
+          if [ -n "${BUILD_COMMAND:-}" ] || [ -n "${CI_COMMAND:-}" ]; then HAVE_CI=true; fi
+
+          # Deploy data is "present" only when all connection essentials are set.
+          HAVE_CD=false
+          if [ -n "${DEPLOY_HOST:-}" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_KEY:-}" ] && [ -n "${DEPLOY_PATH:-}" ]; then
+            HAVE_CD=true
+          fi
+
+          RUN_CI=false
+          RUN_CD=false
+          if [ "$PR" = "true" ]; then
+            [ "$HAVE_CI" = "true" ] && RUN_CI=true || true
+          elif [ "$ACTIVE" = "true" ]; then
+            [ "$HAVE_CI" = "true" ] && RUN_CI=true || true
+            [ "$HAVE_CD" = "true" ] && RUN_CD=true || true
+          fi
+
+          # Deploy scope (only meaningful when RUN_CD=true).
+          #   COMMAND            -> no file ops (none)
+          #   workflow_dispatch  -> selective (input commits)
+          #   create (tag)       -> full
+          #   push               -> selective if DEPLOY_LAST_COMMITS=true else full
+          SCOPE=""
+          COMMITS=""
+          if [ "$RUN_CD" = "true" ]; then
+            if [ "$DEPLOY_METHOD" = "COMMAND" ]; then
+              SCOPE="none"
+            elif [ "$EVENT" = "workflow_dispatch" ]; then
+              SCOPE="selective"; COMMITS="$INPUT_COMMITS"
+            elif [ "$EVENT" = "create" ]; then
+              SCOPE="full"
+            elif [ "$EVENT" = "push" ]; then
+              if [ "$DEPLOY_LAST_COMMITS" = "true" ]; then
+                SCOPE="selective"; COMMITS="$PUSH_COMMITS"
+              else
+                SCOPE="full"
+              fi
+            fi
+          fi
+
+          echo "ACTION_TRIGGER=$ACTION_TRIGGER event=$EVENT ref_type=$REF_TYPE active=$ACTIVE pr=$PR"
+          echo "run_ci=$RUN_CI run_cd=$RUN_CD method=$DEPLOY_METHOD scope=$SCOPE"
+          {
+            echo "run_ci=$RUN_CI"
+            echo "run_cd=$RUN_CD"
+            echo "scope=$SCOPE"
+            echo "commits=$COMMITS"
+          } >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: [get-branch, gate]
+    if: ${{ needs.gate.outputs.run_ci == 'true' }}
+    runs-on: ubuntu-latest
+
+    environment: ${{ needs.get-branch.outputs.environment }}
 
     env:
       BUILD_COMMAND: ${{ vars.BUILD_COMMAND }}
@@ -45,16 +181,12 @@ jobs:
           set -euo pipefail
           eval "$CI_COMMAND"
 
-      - name: Nothing configured
-        if: ${{ env.BUILD_COMMAND == '' && env.CI_COMMAND == '' }}
-        run: echo "::warning::Neither BUILD_COMMAND nor CI_COMMAND is set for environment '${{ github.ref_name }}'; skipping checks"
-
   cd:
-    needs: ci
-    if: ${{ github.event_name != 'pull_request' }}
+    needs: [get-branch, gate, ci]
+    if: ${{ !failure() && !cancelled() && needs.gate.outputs.run_cd == 'true' }}
     runs-on: ubuntu-latest
 
-    environment: ${{ github.ref_name }}
+    environment: ${{ needs.get-branch.outputs.environment }}
 
     env:
       DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
@@ -64,76 +196,42 @@ jobs:
       DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
       DEPLOY_MIRROR: ${{ inputs.deploy_mirror || vars.DEPLOY_MIRROR || 'false' }}
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
-      DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD }}
+      DEPLOY_METHOD: ${{ vars.DEPLOY_METHOD || 'COMMAND' }}
       BUILD_COMMAND: ${{ vars.BUILD_COMMAND }}
       BEFORE_DEPLOY_COMMAND: ${{ vars.BEFORE_DEPLOY_COMMAND }}
       AFTER_DEPLOY_COMMAND: ${{ vars.AFTER_DEPLOY_COMMAND }}
-      DEPLOY_ON_PUSH: ${{ vars.DEPLOY_ON_PUSH || 'false' }}
-      DEPLOY_LAST_COMMITS: ${{ vars.DEPLOY_LAST_COMMITS || 'false' }}
+      SCOPE: ${{ needs.gate.outputs.scope }}
+      COMMITS: ${{ needs.gate.outputs.commits }}
 
     steps:
-      - name: Resolve deployment mode
+      # For RELEASE deploys (tag): wait for release.yml to finish so a freshly built
+      # Docker image is already pushed before the server pulls it. A failed release
+      # makes this step (and the job) fail — deploying on a broken release is pointless.
+      # If release.yml does not exist, do not wait (fail-on-no-checks: false).
+      - name: Wait for release workflow
+        if: ${{ github.ref_type == 'tag' }}
+        uses: lewagon/wait-on-check-action@v1.8.0
+        with:
+          ref: ${{ github.ref }}
+          check-regexp: '^(release|npm-publish|docker-publish)$'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          allowed-conclusions: success,skipped
+          wait-interval: 15
+          fail-on-no-checks: false
+
+      - name: Validate deploy mode
         shell: bash
-        env:
-          EVENT: ${{ github.event_name }}
-          INPUT_COMMITS: ${{ inputs.commits }}
-          PUSH_COMMITS: ${{ join(github.event.commits.*.id, ',') }}
         run: |
           set -euo pipefail
-
-          # Nothing to deploy if no method is configured for this environment.
-          if [ -z "${DEPLOY_METHOD:-}" ]; then
-            echo "DEPLOY_METHOD is empty — nothing to deploy, skipping CD."
-            echo "SKIP_DEPLOY=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          # SCOPE: full     -> mirror the whole DEPLOY_LOCAL_DIR (legacy deploy.yml)
-          #        selective -> deploy only files touched in COMMITS (legacy separated-delpoy.yml)
-          SCOPE=""
-          COMMITS=""
-
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            SCOPE="selective"
-            COMMITS="$INPUT_COMMITS"
-          elif [ "$EVENT" = "push" ]; then
-            if [ "$DEPLOY_ON_PUSH" != "true" ]; then
-              echo "DEPLOY_ON_PUSH is not 'true' — skipping deploy on push."
-              echo "SKIP_DEPLOY=true" >> "$GITHUB_ENV"
-              exit 0
-            fi
-            if [ "$DEPLOY_LAST_COMMITS" = "true" ]; then
-              SCOPE="selective"
-              COMMITS="$PUSH_COMMITS"
-            else
-              SCOPE="full"
-            fi
-          else
-            echo "::warning::Unsupported event '$EVENT' — skipping."
-            echo "SKIP_DEPLOY=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
           # GIT deploys the whole branch on the server and cannot deploy a file subset.
           if [ "$SCOPE" = "selective" ] && [ "$DEPLOY_METHOD" = "GIT" ]; then
             echo "::error::DEPLOY_METHOD=GIT is not supported in selective mode (workflow_dispatch with commits or DEPLOY_LAST_COMMITS=true). GIT deploys the whole branch, not a file subset."
             exit 1
           fi
-
-          echo "SKIP_DEPLOY=false" >> "$GITHUB_ENV"
-          echo "SCOPE=$SCOPE" >> "$GITHUB_ENV"
-          echo "COMMITS=$COMMITS" >> "$GITHUB_ENV"
-          echo "Resolved: event=$EVENT scope=$SCOPE method=$DEPLOY_METHOD commits='$COMMITS'"
-
-      - name: Checkout
-        if: ${{ env.SKIP_DEPLOY != 'true' }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 0
+          echo "Resolved: method=$DEPLOY_METHOD scope=$SCOPE commits='$COMMITS'"
 
       - name: Setup SSH key
-        if: ${{ env.SKIP_DEPLOY != 'true' && (env.DEPLOY_METHOD == 'RSYNC' || env.DEPLOY_METHOD == 'GIT') }}
+        if: ${{ env.DEPLOY_METHOD == 'RSYNC' || env.DEPLOY_METHOD == 'GIT' || env.DEPLOY_METHOD == 'COMMAND' }}
         shell: bash
         run: |
           TMP_KEY=$(mktemp)
@@ -141,8 +239,15 @@ jobs:
           chmod 600 "$TMP_KEY"
           echo "TMP_KEY=$TMP_KEY" >> "$GITHUB_ENV"
 
+      - name: Checkout
+        if: ${{ env.SCOPE != 'none' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
       - name: Resolve REF_COMMIT
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.SCOPE == 'selective' }}
+        if: ${{ env.SCOPE == 'selective' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -165,7 +270,7 @@ jobs:
           fi
 
       - name: Build
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.BUILD_COMMAND != '' }}
+        if: ${{ env.SCOPE != 'none' && env.BUILD_COMMAND != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -175,15 +280,20 @@ jobs:
           eval "$BUILD_COMMAND"
 
       - name: Cache lftp
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.DEPLOY_METHOD == 'FTP' }}
+        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
         id: cache-lftp
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-lftp
+          key: ${{ runner.os }}-apt-lftp-v2
+
+      - name: Keep apt packages for caching
+        if: ${{ env.DEPLOY_METHOD == 'FTP' }}
+        shell: bash
+        run: echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99keep-cache >/dev/null
 
       - name: Resolve changed files
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.SCOPE == 'selective' }}
+        if: ${{ env.SCOPE == 'selective' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -250,7 +360,7 @@ jobs:
           fi
 
       - name: Before deploy command
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.BEFORE_DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
+        if: ${{ env.BEFORE_DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -261,7 +371,7 @@ jobs:
           "
 
       - name: FTP deploy (full mirror)
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.DEPLOY_METHOD == 'FTP' && env.SCOPE == 'full' }}
+        if: ${{ env.DEPLOY_METHOD == 'FTP' && env.SCOPE == 'full' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -356,7 +466,7 @@ jobs:
           fi
 
       - name: FTP deploy (selective)
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.DEPLOY_METHOD == 'FTP' && env.SCOPE == 'selective' }}
+        if: ${{ env.DEPLOY_METHOD == 'FTP' && env.SCOPE == 'selective' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -509,7 +619,7 @@ jobs:
           fi
 
       - name: RSYNC deploy (full)
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.DEPLOY_METHOD == 'RSYNC' && env.SCOPE == 'full' }}
+        if: ${{ env.DEPLOY_METHOD == 'RSYNC' && env.SCOPE == 'full' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -527,7 +637,7 @@ jobs:
             "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
 
       - name: RSYNC deploy (selective)
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.DEPLOY_METHOD == 'RSYNC' && env.SCOPE == 'selective' }}
+        if: ${{ env.DEPLOY_METHOD == 'RSYNC' && env.SCOPE == 'selective' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -567,7 +677,7 @@ jobs:
           fi
 
       - name: GIT deploy
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.DEPLOY_METHOD == 'GIT' }}
+        if: ${{ env.DEPLOY_METHOD == 'GIT' }}
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
         shell: bash
@@ -589,7 +699,7 @@ jobs:
           "
 
       - name: After deploy command
-        if: ${{ env.SKIP_DEPLOY != 'true' && env.AFTER_DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
+        if: ${{ env.AFTER_DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
         shell: bash
         run: |
           set -euo pipefail

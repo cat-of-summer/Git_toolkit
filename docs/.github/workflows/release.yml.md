@@ -136,6 +136,26 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 
 ---
 
+## Связка с `ci-cd.yml` (деплой при релизе)
+
+`release.yml` только публикует артефакт (npm-пакет / Docker-образ). Деплой на сервер делает
+`ci-cd.yml`, когда в окружении ветки задана переменная `ACTION_TRIGGER=RELEASE`.
+
+Порядок при создании тега:
+
+1. Запускаются оба workflow (оба на `create` + `get-branch`).
+2. `release.yml` собирает и пушит артефакт (`PUBLISH_METHOD=npm`/`docker`).
+3. Job `cd` в `ci-cd.yml` дожидается успешного завершения `release.yml`
+   (через `lewagon/wait-on-check-action`, чеки `release` / `npm-publish` / `docker-publish`)
+   и только потом деплоит — например, `DEPLOY_METHOD=COMMAND` с
+   `AFTER_DEPLOY_COMMAND=docker compose pull && docker compose up -d`.
+
+Поведение при провале: если `release.yml` упал — `cd` тоже падает (🔴), деплой не выполняется.
+Если `ci-cd.yml`/`ACTION_TRIGGER=RELEASE` не настроен — `release.yml` работает сам по себе.
+Подробности — в [ci-cd.yml.md](ci-cd.yml.md).
+
+---
+
 ## Как работает flatten файлов
 
 Шаг "Flatten release asset names" решает проблему коллизий имён при прикреплении файлов из разных директорий. Символ `/` в относительном пути заменяется на `__`:
