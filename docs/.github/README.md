@@ -27,6 +27,7 @@
 
 ## Папки
 
+- [reusable_workflows](reusable_workflows/)
 - [workflows](workflows/)
 
 <!-- DOCGEN:END -->
