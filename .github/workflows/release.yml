@@ -2,6 +2,7 @@ name: release
 
 on:
   create:
+  workflow_call:
 
 permissions:
   contents: write

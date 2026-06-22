@@ -3,6 +3,7 @@ name: Generate docs structure
 on:
   push: {}
   workflow_dispatch: {}
+  workflow_call: {}
 
 permissions:
   contents: write
