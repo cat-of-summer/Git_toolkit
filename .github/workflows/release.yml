@@ -211,3 +211,19 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
             ${{ steps.meta.outputs.image }}:latest
+
+  packagist-publish:
+    needs: [get-branch, release]
+    if: ${{ needs.release.outputs.publish_method == 'packagist' }}
+    runs-on: ubuntu-latest
+
+    environment: ${{ needs.get-branch.outputs.branch }}
+
+    steps:
+      - name: Trigger Packagist update
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSf -X POST -H "content-type:application/json" \
+            "https://packagist.org/api/update-package?username=${{ vars.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_API_TOKEN }}" \
+            -d "{\"repository\":{\"url\":\"https://github.com/${{ github.repository }}\"}}"
