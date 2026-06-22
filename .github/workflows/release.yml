@@ -3,6 +3,11 @@ name: release
 on:
   create:
   workflow_call:
+    secrets:
+      PACKAGIST_API_TOKEN:
+        required: false
+      DOCKER_TOKEN:
+        required: false
 
 permissions:
   contents: write
