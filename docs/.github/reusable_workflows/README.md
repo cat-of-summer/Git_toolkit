@@ -4,6 +4,5 @@
 ## Файлы
 
 - [docgen.yml](docgen.yml.md)
-- [release.yml](release.yml.md)
 
 <!-- DOCGEN:END -->
