@@ -105,6 +105,9 @@ jobs:
             git diff-tree --no-commit-id -r --name-only "$commit" >> "$ALL_FILES"
           done
 
+          # .github/ and .git/ are repo-owned, never server-synced (same as full-listing mode)
+          grep -vE '^\.git/|^\.github/' "$ALL_FILES" > "$ALL_FILES.tmp" && mv "$ALL_FILES.tmp" "$ALL_FILES"
+
           sort -u -o "$ALL_FILES" "$ALL_FILES"
 
           while IFS= read -r file; do
@@ -455,6 +458,9 @@ jobs:
             git checkout -b "$BRANCH"
           fi
           git add -A
+
+          # .github/ is repo-owned, never server-synced: GITHUB_TOKEN cannot push workflow changes.
+          git reset -q -- .git .github 2>/dev/null || true
 
           git diff --cached --name-only --diff-filter=M | while IFS= read -r f; do
             if git diff --cached --ignore-cr-at-eol --quiet -- "$f"; then
