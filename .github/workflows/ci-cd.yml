@@ -633,6 +633,7 @@ jobs:
             -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
             --exclude='.*' \
             --no-perms --no-owner --no-group \
+            --omit-dir-times \
             --keep-dirlinks \
             "$DEPLOY_LOCAL_DIR/" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
 
@@ -661,6 +662,7 @@ jobs:
               --files-from="$UPLOAD_FILE" \
               --ignore-missing-args \
               --no-perms --no-owner --no-group \
+              --omit-dir-times \
               --keep-dirlinks \
               "$SRC_DIR" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
           else
