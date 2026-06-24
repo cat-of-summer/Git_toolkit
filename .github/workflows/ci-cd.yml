@@ -12,10 +12,10 @@ on:
         type: string
         default: ''
       deploy_mirror:
-        description: 'Delete from server files that exist in candidate set but are missing at REF_COMMIT (true/false)'
+        description: 'false=delete nothing; true=delete only files removed in deployed commits (selective); full=exact mirror sync (rsync/lftp --delete, git reset --hard) — wipes untracked files on server'
         required: false
         type: string
-        default: 'true'
+        default: 'false'
   create:
 
 permissions:
@@ -24,8 +24,7 @@ permissions:
   statuses: read
 
 jobs:
-  # Resolve the GitHub Environment name (= branch). For tags the branch is found
-  # via the commit, mirroring release.yml's get-branch job; otherwise it is the ref name.
+
   get-branch:
     runs-on: ubuntu-latest
     outputs:
@@ -50,8 +49,6 @@ jobs:
           echo "Environment resolved to: '$BRANCH'"
           echo "environment=$BRANCH" >> "$GITHUB_OUTPUT"
 
-  # Read environment-scoped vars (impossible in job-level `if`) and emit gating flags.
-  # run_ci / run_cd drive whether ci / cd run at all (grey/skipped when false).
   gate:
     needs: get-branch
     runs-on: ubuntu-latest
@@ -87,11 +84,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ACTION_TRIGGER (per-environment): DISPATCH (default) / PUSH / RELEASE.
-          #   workflow_dispatch -> always active (explicit manual run)
-          #   push on a branch  -> active only when ACTION_TRIGGER=PUSH
-          #   create of a tag   -> active only when ACTION_TRIGGER=RELEASE
-          #   pull_request      -> CI only (never deploys)
           ACTIVE=false
           PR=false
           case "$EVENT" in
@@ -101,11 +93,9 @@ jobs:
             create) [ "$REF_TYPE" = "tag" ]    && [ "$ACTION_TRIGGER" = "RELEASE" ] && ACTIVE=true || true ;;
           esac
 
-          # CI is configured if at least one command is set.
           HAVE_CI=false
           if [ -n "${BUILD_COMMAND:-}" ] || [ -n "${CI_COMMAND:-}" ]; then HAVE_CI=true; fi
 
-          # Deploy data is "present" only when all connection essentials are set.
           HAVE_CD=false
           if [ -n "${DEPLOY_HOST:-}" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_KEY:-}" ] && [ -n "${DEPLOY_PATH:-}" ]; then
             HAVE_CD=true
@@ -120,11 +110,6 @@ jobs:
             [ "$HAVE_CD" = "true" ] && RUN_CD=true || true
           fi
 
-          # Deploy scope (only meaningful when RUN_CD=true).
-          #   COMMAND            -> no file ops (none)
-          #   workflow_dispatch  -> selective (input commits)
-          #   create (tag)       -> full
-          #   push               -> selective if DEPLOY_LAST_COMMITS=true else full
           SCOPE=""
           COMMITS=""
           if [ "$RUN_CD" = "true" ]; then
@@ -204,10 +189,6 @@ jobs:
       COMMITS: ${{ needs.gate.outputs.commits }}
 
     steps:
-      # For RELEASE deploys (tag): wait for release.yml to finish so a freshly built
-      # Docker image is already pushed before the server pulls it. A failed release
-      # makes this step (and the job) fail — deploying on a broken release is pointless.
-      # If release.yml does not exist, do not wait (fail-on-no-checks: false).
       - name: Wait for release workflow
         if: ${{ github.ref_type == 'tag' }}
         uses: lewagon/wait-on-check-action@v1.8.0
@@ -223,12 +204,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # GIT deploys the whole branch on the server and cannot deploy a file subset.
           if [ "$SCOPE" = "selective" ] && [ "$DEPLOY_METHOD" = "GIT" ]; then
             echo "::error::DEPLOY_METHOD=GIT is not supported in selective mode (workflow_dispatch with commits or DEPLOY_LAST_COMMITS=true). GIT deploys the whole branch, not a file subset."
             exit 1
           fi
-          echo "Resolved: method=$DEPLOY_METHOD scope=$SCOPE commits='$COMMITS'"
+          case "$DEPLOY_MIRROR" in
+            false|true|full) ;;
+            *) echo "::error::Invalid DEPLOY_MIRROR='$DEPLOY_MIRROR'. Allowed: false | true | full."; exit 1 ;;
+          esac
+          echo "Resolved: method=$DEPLOY_METHOD scope=$SCOPE mirror=$DEPLOY_MIRROR commits='$COMMITS'"
 
       - name: Setup SSH key
         if: ${{ env.DEPLOY_METHOD == 'RSYNC' || env.DEPLOY_METHOD == 'GIT' || env.DEPLOY_METHOD == 'COMMAND' }}
@@ -305,12 +289,10 @@ jobs:
           > "$DELETE_FILE"
           > "$ALL_FILES"
 
-          # Normalize DEPLOY_LOCAL_DIR: strip trailing slash and leading ./
           LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
-          # Build the candidate set: every path ever touched in the relevant commits.
           if [ -z "$COMMITS" ]; then
             echo "=== Full deploy mode: collecting all paths ever touched in history ==="
             git log --pretty=format: --name-only | grep -v '^$' | sort -u > "$ALL_FILES" || true
@@ -327,10 +309,8 @@ jobs:
 
           echo "=== Candidate files: $(wc -l < "$ALL_FILES") ==="
 
-          # Classify by state at REF_COMMIT
           while IFS= read -r file; do
             [ -z "$file" ] && continue
-            # Apply LOCAL_DIR scope filter
             if [ -n "$LOCAL_DIR" ]; then
               [[ "$file" == "$LOCAL_DIR/"* ]] || continue
               rel="${file#"$LOCAL_DIR/"}"
@@ -341,7 +321,7 @@ jobs:
             if git cat-file -e "$REF_COMMIT:$file" 2>/dev/null; then
               echo "$rel" >> "$UPLOAD_FILE"
             else
-              if [ "${DEPLOY_MIRROR}" = "true" ]; then
+              if [ "${DEPLOY_MIRROR}" = "true" ] || [ "${DEPLOY_MIRROR}" = "full" ]; then
                 echo "$rel" >> "$DELETE_FILE"
               fi
             fi
@@ -384,12 +364,10 @@ jobs:
           fi
 
           DELETE=""
-          if [ "${DEPLOY_MIRROR}" = "true" ]; then
+          if [ "${DEPLOY_MIRROR}" = "full" ]; then
             DELETE="--delete"
           fi
 
-          # Runs an lftp session from a commands file
-          # max_retries: lftp-internal retry count per operation
           run_lftp_session() {
             local cmd_file="$1" max_retries="$2"
             {
@@ -406,7 +384,6 @@ jobs:
             } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
           }
 
-          # Uploads a single file: 3 bash-level retries, 1 lftp-internal retry each
           run_lftp_single() {
             local cmd_file="$1" label="$2"
             local success=false
@@ -427,7 +404,6 @@ jobs:
           BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
           printf '%s\n' "mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' \"$DEPLOY_LOCAL_DIR\" \"$DEPLOY_PATH\"" > "$BATCH_CMD_FILE"
 
-          # Attempt batch: 3 tries, 5 lftp-internal retries each
           echo "Attempting batch mirror..."
           batch_ok=false
           for attempt in 1 2 3; do
@@ -442,7 +418,6 @@ jobs:
             fi
           done
 
-          # Fallback: per-file upload (deletions skipped in fallback mode)
           if [ "$batch_ok" = "false" ]; then
             echo "Falling back to per-file upload..."
             LOCAL_DIR="${DEPLOY_LOCAL_DIR%/}"
@@ -482,8 +457,6 @@ jobs:
           LOCAL_DIR="${LOCAL_DIR#./}"
           [ "$LOCAL_DIR" = "." ] && LOCAL_DIR=""
 
-          # Runs an lftp session from a commands file
-          # max_retries: lftp-internal retry count per operation
           run_lftp_session() {
             local cmd_file="$1" max_retries="$2"
             {
@@ -500,7 +473,6 @@ jobs:
             } | lftp -u "$DEPLOY_USER,$DEPLOY_KEY" -p "$DEPLOY_PORT" "$DEPLOY_HOST"
           }
 
-          # Uploads/deletes a single file: 3 bash-level retries, 1 lftp-internal retry each
           run_lftp_single() {
             local cmd_file="$1" label="$2"
             local success=false
@@ -523,9 +495,7 @@ jobs:
           UPLOAD_FILE="$RUNNER_TEMP/files_upload.txt"
           DELETE_FILE="$RUNNER_TEMP/files_delete.txt"
 
-          # --- UPLOADS ---
           if [ -s "$UPLOAD_FILE" ]; then
-            # Build a single batch script with all put commands
             > "$BATCH_CMD_FILE"
             while IFS= read -r file; do
               [ -z "$file" ] && continue
@@ -544,7 +514,6 @@ jobs:
               echo "put -O \"$remote_dir\" \"$src_path\"" >> "$BATCH_CMD_FILE"
             done < "$UPLOAD_FILE"
 
-            # Attempt batch: 3 tries, 5 lftp-internal retries each
             echo "Attempting batch upload..."
             batch_ok=false
             for attempt in 1 2 3; do
@@ -559,7 +528,6 @@ jobs:
               fi
             done
 
-            # Fallback: upload each file individually
             if [ "$batch_ok" = "false" ]; then
               echo "Falling back to per-file upload..."
               while IFS= read -r file; do
@@ -582,16 +550,13 @@ jobs:
             fi
           fi
 
-          # --- DELETES ---
           if [ -s "$DELETE_FILE" ]; then
-            # Build a single batch script with all rm commands
             > "$BATCH_CMD_FILE"
             while IFS= read -r file; do
               [ -z "$file" ] && continue
               echo "rm -f \"$DEPLOY_PATH/$file\"" >> "$BATCH_CMD_FILE"
             done < "$DELETE_FILE"
 
-            # Attempt batch delete: 3 tries, 5 lftp-internal retries each
             echo "Attempting batch delete..."
             batch_ok=false
             for attempt in 1 2 3; do
@@ -606,7 +571,6 @@ jobs:
               fi
             done
 
-            # Fallback: delete each file individually
             if [ "$batch_ok" = "false" ]; then
               echo "Falling back to per-file delete..."
               while IFS= read -r file; do
@@ -625,11 +589,23 @@ jobs:
           set -euo pipefail
 
           DELETE=""
-          if [ "${DEPLOY_MIRROR}" = "true" ]; then
+          if [ "${DEPLOY_MIRROR}" = "full" ]; then
             DELETE="--delete"
           fi
 
-          rsync -avz --progress $DELETE \
+          attempt_rsync() {
+            local rc
+            for attempt in 1 2 3; do
+              if rsync "$@"; then return 0; fi
+              rc=$?
+              echo "::warning::rsync attempt $attempt/3 failed (exit $rc); retrying in 5s..."
+              sleep 5
+            done
+            echo "::error::rsync failed after 3 attempts (last exit $rc)"
+            return 1
+          }
+
+          attempt_rsync -avz --progress --timeout=30 $DELETE \
             -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
             --exclude='.*' \
             --no-perms --no-owner --no-group \
@@ -656,8 +632,20 @@ jobs:
             SRC_DIR="$LOCAL_DIR/"
           fi
 
+          attempt_rsync() {
+            local rc
+            for attempt in 1 2 3; do
+              if rsync "$@"; then return 0; fi
+              rc=$?
+              echo "::warning::rsync attempt $attempt/3 failed (exit $rc); retrying in 5s..."
+              sleep 5
+            done
+            echo "::error::rsync failed after 3 attempts (last exit $rc)"
+            return 1
+          }
+
           if [ -s "$UPLOAD_FILE" ]; then
-            rsync -avz --progress \
+            attempt_rsync -avz --progress --timeout=30 \
               -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
               --files-from="$UPLOAD_FILE" \
               --ignore-missing-args \
@@ -669,7 +657,7 @@ jobs:
             echo "No files to upload."
           fi
 
-          if [ "${DEPLOY_MIRROR}" = "true" ] && [ -s "$DELETE_FILE" ]; then
+          if { [ "${DEPLOY_MIRROR}" = "true" ] || [ "${DEPLOY_MIRROR}" = "full" ]; } && [ -s "$DELETE_FILE" ]; then
             while IFS= read -r file; do
               [ -z "$file" ] && continue
               ssh -i "$TMP_KEY" \
@@ -691,7 +679,7 @@ jobs:
             if [ ! -d '.git' ]; then
               git clone --branch ${GITHUB_REF_NAME} git@github.com:${GITHUB_REPOSITORY}.git .
             else
-              if [ "${DEPLOY_MIRROR}" = "true" ]; then
+              if [ "${DEPLOY_MIRROR}" = "full" ]; then
                 git fetch origin ${GITHUB_REF_NAME}
                 git reset --hard origin/${GITHUB_REF_NAME}
               else
