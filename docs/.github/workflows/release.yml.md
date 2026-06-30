@@ -9,14 +9,14 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 - Опционально собрать проект
 - Подготовить и переименовать файлы релиза (flatten)
 - Создать GitHub Release с автоматически сгенерированным описанием и прикреплёнными файлами
-- Опционально опубликовать артефакт: npm-пакет в GitHub Packages **или** Docker-образ в реестр
+- Опционально опубликовать артефакт: npm-пакет (npmjs.org или GitHub Packages — по наличию `NPM_TOKEN`) **или** Docker-образ в реестр
 
 Триггеры:
 - `create` — срабатывает при создании любого тега или ветки; джоба `get-branch` дополнительно проверяет `github.ref_type == 'tag'`
 
 Права (permissions):
 - `contents: write` — необходимо для создания Release
-- `packages: write` — необходимо для публикации npm-пакета в GitHub Packages и пуша Docker-образа в `ghcr.io`
+- `packages: write` — необходимо для публикации npm-пакета в GitHub Packages (когда `NPM_TOKEN` не задан) и пуша Docker-образа в `ghcr.io`
 
 ---
 
@@ -75,7 +75,7 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 
 ### npm-publish
 
-Публикует npm-пакет в GitHub Packages.
+Публикует npm-пакет в **npmjs.org** или в **GitHub Packages** — реестр выбирается автоматически по наличию секрета `NPM_TOKEN`.
 
 | Поле | Значение |
 |------|----------|
@@ -90,13 +90,25 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 |------------|----------|
 | `BUILD_COMMAND` | Команда сборки (та же, что и в джобе `release`) |
 
+Выбор реестра:
+
+| Условие | Реестр | Токен аутентификации |
+|---------|--------|----------------------|
+| секрет `NPM_TOKEN` задан и не пустой | `https://registry.npmjs.org` | `NPM_TOKEN` |
+| `NPM_TOKEN` не задан | `https://npm.pkg.github.com` | `GITHUB_TOKEN` |
+
+Фолбэка между реестрами нет: выбирается один реестр, и при ошибке публикации джоба падает.
+
 Шаги:
 1. Checkout репозитория
-2. Setup Node.js с реестром `https://npm.pkg.github.com`
-3. **Build** — аналогично джобе `release`, пропускается если `BUILD_COMMAND` пустой
-4. **Override npm auth for publish** — патчит `.npmrc`, подставляя `GITHUB_TOKEN` в качестве токена аутентификации
-5. **Set version from tag** — проверяет, что тег соответствует формату `v#`, `v#.#` или `v#.#.#`; извлекает числа и устанавливает версию пакета через `npm version` (без создания git-тега)
-6. `npm publish` — публикует пакет
+2. **Select npm registry** — по наличию `NPM_TOKEN` выбирает URL реестра (npmjs.org или GitHub Packages) и кладёт его в output `url`
+3. Setup Node.js с выбранным реестром
+4. **Build** — аналогично джобе `release`, пропускается если `BUILD_COMMAND` пустой. Выполняется **до** подмены токена, поэтому установка зависимостей (`npm ci`) использует закоммиченный в репозитории `.npmrc` с read-токеном (например, для приватных пакетов из GitHub Packages)
+5. **Override npm auth for publish** — дописывает в project-level `.npmrc` целевой реестр и write-токен (`NPM_TOKEN` с фолбэком на `GITHUB_TOKEN`). Нужно потому, что закоммиченный project-`.npmrc` по приоритету перебивает конфиг от `setup-node`; внутри файла побеждает последняя запись, поэтому read-токен для публикации заменяется на write-токен. Работает и когда `.npmrc` в репозитории нет (файл создаётся)
+6. **Set version from tag** — проверяет, что тег соответствует формату `v#`, `v#.#` или `v#.#.#`; извлекает числа и устанавливает версию пакета через `npm version` (без создания git-тега)
+7. **Publish** — уровень доступа определяется по приватности репозитория (`github.event.repository.private`): приватный → `restricted`, публичный → `public`, и выполняется `npm publish --access <access>`
+
+> Имя пакета в `package.json` для GitHub Packages обязано быть scoped (`@owner/name`). Для npmjs допускается и unscoped-имя.
 
 ### docker-publish
 
@@ -174,6 +186,7 @@ dist/windows/app.exe  →  windows__app.exe
    - `BUILD_COMMAND` — команда сборки (необязательно)
    - `RELEASE_FILES` — glob-паттерны файлов через запятую (необязательно)
    - `PUBLISH_METHOD` — `npm` или `docker` для публикации (необязательно)
+   - Для публикации в npmjs.org добавь секрет `NPM_TOKEN`. Без него npm-пакет уходит в GitHub Packages
 3. Создай и запушь тег:
    ```
    git tag v1.0.0
@@ -214,7 +227,8 @@ services:
 
 | Секрет | Описание |
 |--------|----------|
-| `GITHUB_TOKEN` | Встроенный токен GitHub Actions, используется для создания Release, публикации npm-пакета и пуша Docker-образа в `ghcr.io` |
+| `GITHUB_TOKEN` | Встроенный токен GitHub Actions, используется для создания Release, публикации npm-пакета в **GitHub Packages** (когда `NPM_TOKEN` не задан) и пуша Docker-образа в `ghcr.io` |
+| `NPM_TOKEN` | Токен npmjs.org (npm automation / granular token). Если задан и не пустой — публикация идёт в `registry.npmjs.org`; если не задан — в GitHub Packages |
 | `DOCKER_TOKEN` | Пароль/токен для входа в нестандартный реестр (когда `DOCKER_REGISTRY` ≠ `ghcr.io`); для `ghcr.io` не нужен |
 
 Отладка:
@@ -222,6 +236,8 @@ services:
 - Если шаг Build падает — проверь `BUILD_COMMAND` в Environment
 - Если файлы не прикрепляются — проверь паттерн `RELEASE_FILES` и результаты сборки; убедись, что хотя бы один файл совпадает
 - Если npm-публикация не запускается — проверь, что `PUBLISH_METHOD=npm` задана в Environment и тег соответствует формату `v#.#.#`
+- Если публикация идёт не в тот реестр — проверь секрет `NPM_TOKEN`: задан → npmjs.org, не задан → GitHub Packages (имя реестра видно в логе шага `Select npm registry`)
+- Уровень доступа (`--access public`/`restricted`) выбирается автоматически по приватности репозитория; для публичного scoped-пакета на npmjs репозиторий должен быть публичным
 - Если docker-публикация не запускается — проверь, что `PUBLISH_METHOD=docker`; если падает на шаге Validate — в репозитории нет Dockerfile по пути `DOCKERFILE_PATH` (по умолчанию `./Dockerfile`)
 - Логи: Actions → выбрать run → шаг `Create GitHub Release`, `npm publish` или `Build & push image`
 
