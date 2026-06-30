@@ -105,8 +105,7 @@ jobs:
             git diff-tree --no-commit-id -r --name-only "$commit" >> "$ALL_FILES"
           done
 
-          # .github/ and .git/ are repo-owned, never server-synced (same as full-listing mode)
-          grep -vE '^\.git/|^\.github/' "$ALL_FILES" > "$ALL_FILES.tmp" && mv "$ALL_FILES.tmp" "$ALL_FILES"
+          grep -vE '^\.git' "$ALL_FILES" > "$ALL_FILES.tmp" && mv "$ALL_FILES.tmp" "$ALL_FILES"
 
           sort -u -o "$ALL_FILES" "$ALL_FILES"
 
@@ -214,7 +213,7 @@ jobs:
               -p "$DEPLOY_PORT" \
               "$DEPLOY_USER@$DEPLOY_HOST" \
               "find -L '$DEPLOY_PATH' -type f -printf '%P\n'" \
-              | grep -vE '^\.git/|^\.github/' > "$SERVER_FILES"
+              | grep -vE '^\.git' > "$SERVER_FILES"
 
           elif [ "$DEPLOY_METHOD" = "FTP" ]; then
             touch "$RUNNER_TEMP/server_files_raw.txt"
@@ -238,7 +237,7 @@ jobs:
             wait "$LFTP_PID"
             DEPLOY_PATH_STRIPPED="${DEPLOY_PATH%/}"
             sed "s|^${DEPLOY_PATH_STRIPPED}/||" "$RUNNER_TEMP/server_files_raw.txt" \
-              | grep -vE '^$|^\.git/|^\.github/' > "$SERVER_FILES"
+              | grep -vE '^$|^\.git' > "$SERVER_FILES"
           fi
 
           echo "=== Total files on server: $(wc -l < "$SERVER_FILES") ==="
@@ -459,8 +458,7 @@ jobs:
           fi
           git add -A
 
-          # .github/ is repo-owned, never server-synced: GITHUB_TOKEN cannot push workflow changes.
-          git reset -q -- .git .github 2>/dev/null || true
+          git reset -q -- .git .github .gitignore .gitattributes .gitmodules 2>/dev/null || true
 
           git diff --cached --name-only --diff-filter=M | while IFS= read -r f; do
             if git diff --cached --ignore-cr-at-eol --quiet -- "$f"; then
