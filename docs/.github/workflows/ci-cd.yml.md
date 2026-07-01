@@ -15,10 +15,11 @@
 успешный деплой». Реальные ошибки шагов — **красный**.
 
 Триггеры:
-- `push` (ветки) — обычные пуши в ветку.
+- `push` — и обычные пуши в ветку, и пуши тега вида `v*` (`tags: ['v*']`); внутри job `gate`
+  они различаются через `github.ref_type` (`branch` / `tag`). Тег нужен для
+  `ACTION_TRIGGER=RELEASE`, как в `release.yml`.
 - `pull_request` — выполняется только `ci` (деплоя нет).
 - `workflow_dispatch` — ручной запуск (выполняется всегда).
-- `create` — создание тега (для `ACTION_TRIGGER=RELEASE`), как в `release.yml`.
 
 Запуск управляется переменной `ACTION_TRIGGER` (на уровне Environment, т.е. **per-branch**):
 
@@ -26,7 +27,7 @@
 |------------------|---------------------------------|
 | `DISPATCH` (по умолчанию) | Никогда автоматически — только ручной `workflow_dispatch` |
 | `PUSH` | На каждый push этой ветки |
-| `RELEASE` | При создании тега на коммите этой ветки, **строго после** `release.yml` |
+| `RELEASE` | При пуше тега на коммите этой ветки, **строго после** `release.yml` |
 
 Входные параметры (`workflow_dispatch`):
 - `commits` — список коммитов через запятую (необязательный; пусто = вся история).
@@ -85,7 +86,7 @@ Secrets:
 | `pull_request` | — | — | деплоя нет (только `ci`) | — |
 | `push` (`PUSH`) | FTP/RSYNC/GIT | `false` | полное зеркало | весь `DEPLOY_LOCAL_DIR` |
 | `push` (`PUSH`) | FTP/RSYNC | `true` | выборочный | коммиты текущего push |
-| `create` тег (`RELEASE`) | FTP/RSYNC/GIT | — | полное зеркало | весь `DEPLOY_LOCAL_DIR` |
+| `push` тег (`RELEASE`) | FTP/RSYNC/GIT | — | полное зеркало | весь `DEPLOY_LOCAL_DIR` |
 | `workflow_dispatch` | FTP/RSYNC | — | выборочный | вход `commits` (пусто = вся история) |
 
 - ⚠️ `GIT` несовместим с выборочным режимом (он подтягивает ветку целиком) — `cd` завершается ошибкой (🔴).
@@ -102,8 +103,8 @@ Secrets:
 |---|---|---|---|---|
 | push | branch | `PUSH` | run | run |
 | push | branch | `DISPATCH`/`RELEASE` | серый | серый |
-| create | tag | `RELEASE` | run | run (ждёт `release.yml`) |
-| create | tag | `DISPATCH`/`PUSH` | серый | серый |
+| push | tag | `RELEASE` | run | run (ждёт `release.yml`) |
+| push | tag | `DISPATCH`/`PUSH` | серый | серый |
 | workflow_dispatch | — | любой | run | run |
 | pull_request | — | — | run | серый |
 
@@ -117,16 +118,22 @@ scope, 🟢/🔴; `GIT`+selective → 🔴; ошибка деплоя → 🔴.
 
 ## Связка с `release.yml` (ACTION_TRIGGER=RELEASE)
 
-При создании тега запускаются оба workflow. `cd` ждёт окончания `release.yml` через
-`lewagon/wait-on-check-action` (чеки `release` / `npm-publish` / `docker-publish`):
+При пуше тега `v*` запускаются оба workflow, и связь между ними двусторонняя:
 
-1. `release.yml` собирает и пушит артефакт (npm-пакет / Docker-образ).
-2. `cd` ждёт его успешного завершения.
-3. `BEFORE_DEPLOY_COMMAND` / `AFTER_DEPLOY_COMMAND` (например, `docker compose pull && up -d`)
-   выполняются уже над готовым образом.
+1. `ci-cd.yml` (эта job `ci`) собирает и проверяет код.
+2. `release.yml` (job `await-ci`) сам дожидается зелёного чека `ci` из `ci-cd.yml` и только
+   после этого резолвит тег/ветку и запускает релиз.
+3. `release.yml` собирает и пушит артефакт (npm-пакет / Docker-образ).
+4. `cd` (эта job) ждёт окончания `release.yml` через `lewagon/wait-on-check-action`
+   (чеки `release` / `npm-publish` / `docker-publish`) и только потом деплоит.
 
-- Если `release.yml` **упал** — ожидание завершается неуспехом, `cd` → 🔴 (деплой над сломанным релизом бессмыслен).
-- Если `release.yml` **нет** — `cd` не ждёт (`fail-on-no-checks: false`) и деплоит сразу.
+Итоговая цепочка при пуше тега: `ci` → `release.yml` (`await-ci` → `prepare` → `release` →
+`npm-publish`/`docker-publish`) → `cd`.
+
+- Если `ci` **упал** — `release.yml` не публикует ничего (`await-ci` не пропускает дальше).
+- Если `release.yml` **упал** — ожидание в `cd` завершается неуспехом, `cd` → 🔴 (деплой над сломанным релизом бессмыслен).
+- Если `ci-cd.yml`/`release.yml` не настроен или нужного чека нет — соответствующая сторона не ждёт
+  (`fail-on-no-checks: false`) и продолжает сама по себе.
 
 ---
 
