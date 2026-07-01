@@ -45,6 +45,7 @@ jobs:
         run: |
           git config core.fileMode false
           git config core.autocrlf false
+          git config core.quotepath false
 
       - name: Resolve REF_COMMIT
         shell: bash
@@ -421,6 +422,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config core.fileMode false
           git config core.autocrlf false
+          git config core.quotepath false
 
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
@@ -460,7 +462,7 @@ jobs:
 
           git reset -q -- .git .github .gitignore .gitattributes .gitmodules 2>/dev/null || true
 
-          git diff --cached --name-only --diff-filter=M | while IFS= read -r f; do
+          git diff --cached --name-only -z --diff-filter=M | while IFS= read -r -d '' f; do
             if git diff --cached --ignore-cr-at-eol --quiet -- "$f"; then
               git restore --staged "$f"
               echo "Unstaged (CRLF-only diff): $f"
