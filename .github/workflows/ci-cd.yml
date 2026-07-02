@@ -13,7 +13,7 @@ on:
         type: string
         default: ''
       deploy_mirror:
-        description: 'false=delete nothing; true=delete only files removed in deployed commits (selective); full=exact mirror sync (rsync/lftp --delete, git reset --hard) — wipes untracked files on server. .git/.github never deployed; .gitignore/.gitattributes/.gitmodules deployed only when true/full'
+        description: 'Keep all:false; delete files removed in commits:true; mirror sync (deletes untracked):full'
         required: false
         type: string
         default: 'false'
@@ -96,7 +96,7 @@ jobs:
           esac
 
           HAVE_CI=false
-          if [ -n "${BUILD_COMMAND:-}" ] || [ -n "${CI_COMMAND:-}" ]; then HAVE_CI=true; fi
+          if [ -n "${CI_COMMAND:-}" ]; then HAVE_CI=true; fi
 
           HAVE_CD=false
           if [ -n "${DEPLOY_HOST:-}" ] && [ -n "${DEPLOY_USER:-}" ] && [ -n "${DEPLOY_KEY:-}" ] && [ -n "${DEPLOY_PATH:-}" ]; then
@@ -118,7 +118,11 @@ jobs:
             if [ "$DEPLOY_METHOD" = "COMMAND" ]; then
               SCOPE="none"
             elif [ "$EVENT" = "workflow_dispatch" ]; then
-              SCOPE="selective"; COMMITS="$INPUT_COMMITS"
+              if [ -z "$INPUT_COMMITS" ]; then
+                SCOPE="full"
+              else
+                SCOPE="selective"; COMMITS="$INPUT_COMMITS"
+              fi
             elif [ "$EVENT" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
               SCOPE="full"
             elif [ "$EVENT" = "push" ]; then
@@ -260,9 +264,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          npm ci
-
           eval "$BUILD_COMMAND"
 
       - name: Cache lftp

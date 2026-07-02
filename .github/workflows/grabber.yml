@@ -9,7 +9,7 @@ on:
         type: string
         default: ''
       deploy_mirror:
-        description: 'Mirror server state: remove repo files that no longer exist on server (true/false)'
+        description: 'Keep all:false; delete files removed on server:true;'
         required: false
         type: string
         default: 'false'
