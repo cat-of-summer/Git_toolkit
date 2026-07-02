@@ -13,7 +13,7 @@ on:
         type: string
         default: ''
       deploy_mirror:
-        description: 'false=delete nothing; true=delete only files removed in deployed commits (selective); full=exact mirror sync (rsync/lftp --delete, git reset --hard) — wipes untracked files on server'
+        description: 'false=delete nothing; true=delete only files removed in deployed commits (selective); full=exact mirror sync (rsync/lftp --delete, git reset --hard) — wipes untracked files on server. .git/.github never deployed; .gitignore/.gitattributes/.gitmodules deployed only when true/full'
         required: false
         type: string
         default: 'false'
@@ -332,14 +332,30 @@ jobs:
           sort -u -o "$UPLOAD_FILE" "$UPLOAD_FILE"
           sort -u -o "$DELETE_FILE" "$DELETE_FILE"
 
-          echo "--- Files to upload: $(wc -l < "$UPLOAD_FILE") ---"
-          cat "$UPLOAD_FILE"
-          echo "--- Files to delete: $(wc -l < "$DELETE_FILE") ---"
-          cat "$DELETE_FILE"
-
           if ! [ -s "$UPLOAD_FILE" ] && ! [ -s "$DELETE_FILE" ]; then
             echo "::warning::No files match DEPLOY_LOCAL_DIR='${DEPLOY_LOCAL_DIR}'"
           fi
+
+      - name: Strip .git* from deploy lists
+        if: ${{ env.SCOPE == 'selective' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$DEPLOY_MIRROR" = "false" ]; then
+            PAT='^\.git'
+          else
+            PAT='^\.git(/|$)|^\.github(/|$)'
+          fi
+
+          for f in "$RUNNER_TEMP/files_upload.txt" "$RUNNER_TEMP/files_delete.txt"; do
+            [ -s "$f" ] || continue
+            grep -vE "$PAT" "$f" > "$f.tmp" || true
+            mv "$f.tmp" "$f"
+          done
+
+          echo "--- Files to upload: $(wc -l < "$RUNNER_TEMP/files_upload.txt") ---"
+          echo "--- Files to delete: $(wc -l < "$RUNNER_TEMP/files_delete.txt") ---"
 
       - name: Before deploy command
         if: ${{ env.BEFORE_DEPLOY_COMMAND != '' && env.DEPLOY_METHOD != 'FTP' }}
@@ -404,7 +420,14 @@ jobs:
 
           BATCH_CMD_FILE="$RUNNER_TEMP/lftp_batch_cmds.txt"
           BATCH_LOG="$RUNNER_TEMP/lftp_batch.log"
-          printf '%s\n' "mirror -R --no-perms --parallel=2 --verbose --exclude-glob '.git*' $DELETE -x '(^|/)\.' \"$DEPLOY_LOCAL_DIR\" \"$DEPLOY_PATH\"" > "$BATCH_CMD_FILE"
+
+          if [ "$DEPLOY_MIRROR" = "false" ]; then
+            GIT_EX="--exclude-glob '.git*'"
+          else
+            GIT_EX="--exclude-glob '.git' --exclude-glob '.github'"
+          fi
+
+          printf '%s\n' "mirror -R --no-perms --parallel=2 --verbose $GIT_EX $DELETE \"$DEPLOY_LOCAL_DIR\" \"$DEPLOY_PATH\"" > "$BATCH_CMD_FILE"
 
           echo "Attempting batch mirror..."
           batch_ok=false
@@ -439,7 +462,13 @@ jobs:
               fi
               printf '%s\n' "mkdir -fp \"$remote_dir\"" "put -O \"$remote_dir\" \"$local_path\"" > "$SINGLE_CMD_FILE"
               run_lftp_single "$SINGLE_CMD_FILE" "$rel_path"
-            done < <(find "$SRC_BASE" \( -name '.git' -prune \) -o -type f -print)
+            done < <(
+              if [ "$DEPLOY_MIRROR" = "false" ]; then
+                find "$SRC_BASE" \( -name '.git' -o -name '.github' -o -name '.gitignore' -o -name '.gitattributes' -o -name '.gitmodules' \) -prune -o -type f -print
+              else
+                find "$SRC_BASE" \( -name '.git' -o -name '.github' \) -prune -o -type f -print
+              fi
+            )
           fi
 
       - name: FTP deploy (selective)
@@ -607,9 +636,15 @@ jobs:
             return 1
           }
 
+          if [ "$DEPLOY_MIRROR" = "false" ]; then
+            GIT_EX=(--exclude='/.git*')
+          else
+            GIT_EX=(--exclude='/.git' --exclude='/.github')
+          fi
+
           attempt_rsync -avz --progress --timeout=30 $DELETE \
             -e "ssh -i $TMP_KEY -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 -p $DEPLOY_PORT" \
-            --exclude='.*' \
+            "${GIT_EX[@]}" \
             --no-perms --no-owner --no-group \
             --omit-dir-times \
             --keep-dirlinks \
