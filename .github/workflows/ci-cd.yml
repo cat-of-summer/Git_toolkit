@@ -41,7 +41,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BRANCH="${{ github.base_ref }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             BRANCH=$(git branch -r --contains "${{ github.sha }}" | grep -v HEAD | head -1 | sed 's#.*origin/##' | tr -d '[:space:]')
           else
             BRANCH="${{ github.ref_name }}"
