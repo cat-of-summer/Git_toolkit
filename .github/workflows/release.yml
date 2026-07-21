@@ -343,6 +343,18 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+          # Теги образа: версия + latest всегда. Тег ветки нужен только в repo-level режиме,
+          # где имя образа общее; при MULTIPLE_PACKAGES ветка уже в имени образа — тег лишний.
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${VERSION}"
+            echo "${IMAGE}:latest"
+            if [ "${MULTIPLE_PACKAGES:-}" != "true" ]; then
+              echo "${IMAGE}:${BRANCH}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Login to registry
         uses: docker/login-action@v3
         with:
@@ -357,10 +369,7 @@ jobs:
           file: ${{ env.DOCKERFILE_PATH }}
           push: true
           platforms: linux/amd64
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.image }}:latest
-            ${{ steps.meta.outputs.image }}:${{ needs.prepare.outputs.branch }}
+          tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             GH_TOKEN=${{ secrets.PAT_TOKEN }}
             VERSION=${{ steps.meta.outputs.sha_short }}

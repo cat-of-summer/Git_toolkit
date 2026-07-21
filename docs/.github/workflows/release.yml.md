@@ -173,7 +173,7 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 3. **Build** — опциональная пред-сборка, пропускается если `BUILD_COMMAND` пустой
 4. **Resolve image ref & version** — формирует полное имя образа `<registry>/<image>` (lowercase) и версию из очищенного тега `needs.prepare.outputs.tag` (`v1.2.3` → `1.2.3`, валидация формата). Если `MULTIPLE_PACKAGES=true`, к имени образа добавляется суффикс `-<branch>` (например, `owner/repo-main`), ветка берётся из `needs.prepare.outputs.branch` (санитизированная `/`→`-`). Наличие явной ветки в теге в этом режиме уже гарантировано шагом `prepare` (проверка формата в самом начале)
 5. **Login** — `docker/login-action@v3`, единый шаг: `username` = `DOCKER_USERNAME` (vars) с фолбэком на `github.actor`, `password` = `DOCKER_TOKEN` (secret) с фолбэком на `GITHUB_TOKEN`. Для `ghcr.io` секреты не нужны; для другого реестра задай `DOCKER_USERNAME` + `DOCKER_TOKEN`
-6. **Build & push** — `docker/build-push-action@v6` для платформы `linux/amd64`, теги `<version>`, `latest` и `<branch>` (имя окружения, санитизированное `/`→`-`)
+6. **Build & push** — `docker/build-push-action@v6` для платформы `linux/amd64`. Список тегов формируется в шаге `meta`: `<version>` и `latest` — всегда; тег `<branch>` (имя окружения, санитизированное `/`→`-`) добавляется **только** в repo-level режиме (`MULTIPLE_PACKAGES` выключен), где имя образа общее для всех веток. При `MULTIPLE_PACKAGES=true` ветка уже зашита в имя образа (`owner/repo-<branch>`), поэтому тег ветки не добавляется — достаточно `<version>` + `latest`
 
 ---
 
