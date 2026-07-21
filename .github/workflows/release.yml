@@ -3,7 +3,8 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*'         # обычный тег: v1.2.3
+      - '**/v*'      # тег с явной веткой: {branch}/v1.2.3 (в т.ч. release/1.x/v1.2.3)
   workflow_dispatch: {}
 
 permissions:
@@ -38,6 +39,8 @@ jobs:
       - name: Resolve & validate tag
         id: resolve
         shell: bash
+        env:
+          MULTIPLE_PACKAGES: ${{ vars.MULTIPLE_PACKAGES }}
         run: |
           set -euo pipefail
           if [ "${{ github.ref_type }}" != "tag" ]; then
@@ -57,6 +60,20 @@ jobs:
           if [[ ! "$VER_TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
             echo "::error::Tag '$VER_TAG' is not a v-version tag (expected v#, v#.#, v#.#.#)." >&2
             exit 1
+          fi
+          # MULTIPLE_PACKAGES диктует формат тега для всего workflow:
+          #   true  -> обязателен префикс ветки: {branch}/vX.Y.Z (валидность ветки проверит find-branch)
+          #   false -> обязателен плоский тег: vX.Y.Z (без префикса ветки)
+          if [ "${MULTIPLE_PACKAGES:-}" = "true" ]; then
+            if [ -z "$BRANCH_EXPLICIT" ]; then
+              echo "::error::MULTIPLE_PACKAGES=true: тег обязан быть в форме '{branch}/vX.Y.Z' (got '$FULL_TAG')." >&2
+              exit 1
+            fi
+          else
+            if [ -n "$BRANCH_EXPLICIT" ]; then
+              echo "::error::MULTIPLE_PACKAGES выключен: тег обязан быть в форме 'vX.Y.Z' без префикса ветки (got '$FULL_TAG'). Включите MULTIPLE_PACKAGES=true для тегов '{branch}/vX.Y.Z'." >&2
+              exit 1
+            fi
           fi
           echo "Resolved tag: $FULL_TAG (version: $VER_TAG, branch: ${BRANCH_EXPLICIT:-auto})"
           echo "ref=$FULL_TAG" >> "$GITHUB_OUTPUT"
@@ -301,13 +318,14 @@ jobs:
         id: meta
         shell: bash
         env:
-          PER_BRANCH_PACKAGE: ${{ vars.PER_BRANCH_PACKAGE }}
+          MULTIPLE_PACKAGES: ${{ vars.MULTIPLE_PACKAGES }}
           BRANCH: ${{ needs.prepare.outputs.branch }}
         run: |
           set -euo pipefail
           IMG="${DOCKER_IMAGE}"
-          if [ "${PER_BRANCH_PACKAGE:-}" = "true" ]; then
+          if [ "${MULTIPLE_PACKAGES:-}" = "true" ]; then
             # Отдельный образ на ветку: owner/repo-<branch> (branch уже санитизирован '/'->'-').
+            # Наличие явной ветки в теге уже гарантировано шагом prepare/resolve.
             IMG="${IMG}-${BRANCH}"
           fi
           IMAGE="$(echo "${DOCKER_REGISTRY}/${IMG}" | tr '[:upper:]' '[:lower:]')"
