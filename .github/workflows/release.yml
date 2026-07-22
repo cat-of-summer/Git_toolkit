@@ -3,8 +3,8 @@ name: release
 on:
   push:
     tags:
-      - 'v*'         # обычный тег: v1.2.3
-      - '**/v*'      # тег с явной веткой: {branch}/v1.2.3 (в т.ч. release/1.x/v1.2.3)
+      - 'v*'
+      - '**/v*'
   workflow_dispatch: {}
 
 permissions:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   await-ci:
-    if: ${{ github.event_name == 'push' }}   # только тег; на workflow_dispatch пропуск
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Wait for CI (ci-cd workflow)
@@ -35,6 +35,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       tag: ${{ steps.resolve.outputs.tag }}
       branch: ${{ steps.find-branch.outputs.branch }}
+      pkg_suffix: ${{ steps.find-branch.outputs.pkg_suffix }}
     steps:
       - name: Resolve & validate tag
         id: resolve
@@ -48,8 +49,6 @@ jobs:
             exit 1
           fi
           FULL_TAG="${{ github.ref_name }}"
-          # Тег вида {branch}/{vX.Y.Z} явно задаёт ветку (environment).
-          # Делим по ПОСЛЕДНЕМУ '/', чтобы поддержать ветки со слешами (release/1.x).
           if [[ "$FULL_TAG" == */* ]]; then
             BRANCH_EXPLICIT="${FULL_TAG%/*}"
             VER_TAG="${FULL_TAG##*/}"
@@ -61,9 +60,6 @@ jobs:
             echo "::error::Tag '$VER_TAG' is not a v-version tag (expected v#, v#.#, v#.#.#)." >&2
             exit 1
           fi
-          # MULTIPLE_PACKAGES диктует формат тега для всего workflow:
-          #   true  -> обязателен префикс ветки: {branch}/vX.Y.Z (валидность ветки проверит find-branch)
-          #   false -> обязателен плоский тег: vX.Y.Z (без префикса ветки)
           if [ "${MULTIPLE_PACKAGES:-}" = "true" ]; then
             if [ -z "$BRANCH_EXPLICIT" ]; then
               echo "::error::MULTIPLE_PACKAGES=true: тег обязан быть в форме '{branch}/vX.Y.Z' (got '$FULL_TAG')." >&2
@@ -84,6 +80,8 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.resolve.outputs.ref }}
       - id: find-branch
+        env:
+          MULTIPLE_PACKAGES: ${{ vars.MULTIPLE_PACKAGES }}
         run: |
           EXPLICIT="${{ steps.resolve.outputs.branch_explicit }}"
           if [ -n "$EXPLICIT" ]; then
@@ -95,9 +93,13 @@ jobs:
           else
             REAL_BRANCH=$(git branch -r --contains "${{ github.sha }}" | grep -v HEAD | head -1 | sed 's#.*origin/##' | tr -d '[:space:]')
           fi
-          # Санитизируем для использования как environment / Docker tag / заголовок: '/' -> '-'
           BRANCH="${REAL_BRANCH//\//-}"
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          if [ "${MULTIPLE_PACKAGES:-}" = "true" ]; then
+            echo "pkg_suffix=-${BRANCH}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pkg_suffix=" >> "$GITHUB_OUTPUT"
+          fi
 
   release:
     needs: prepare
@@ -184,6 +186,11 @@ jobs:
 
     environment: ${{ needs.prepare.outputs.branch }}
 
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
     env:
       BUILD_COMMAND: ${{ vars.BUILD_COMMAND }}
 
@@ -193,6 +200,13 @@ jobs:
           ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure npm CLI supports trusted publishing
+        shell: bash
+        run: npm install -g npm@latest
 
       - name: Build
         if: ${{ env.BUILD_COMMAND != '' }}
@@ -200,21 +214,6 @@ jobs:
         run: |
           set -euo pipefail
           eval "$BUILD_COMMAND"
-
-      - name: Write .npmrc auth
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          {
-            echo "//npm.pkg.github.com/:_authToken=${GH_TOKEN}"
-            if [ -n "${NPM_TOKEN:-}" ]; then
-              echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}"
-            fi
-            echo "always-auth=true"
-          } >> .npmrc
 
       - name: Set version from tag
         shell: bash
@@ -232,48 +231,59 @@ jobs:
           echo "Tag $TAG -> package version $VERSION"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
-      - name: Publish to GitHub Packages
+      - name: Apply per-branch package name
+        if: ${{ needs.prepare.outputs.pkg_suffix != '' }}
         shell: bash
         env:
-          REPO_PRIVATE: ${{ github.event.repository.private }}
+          SUFFIX: ${{ needs.prepare.outputs.pkg_suffix }}
         run: |
           set -euo pipefail
-          if [ "$REPO_PRIVATE" = "true" ]; then
-            ACCESS="restricted"
-          else
-            ACCESS="public"
-          fi
-          PKG=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          URL="https://npm.pkg.github.com"
-          if npm view "$PKG@$VERSION" version --registry "$URL" >/dev/null 2>&1; then
-            echo "$PKG@$VERSION уже есть в GitHub Packages — пропускаем"
-          else
-            echo "npm publish --registry $URL --access $ACCESS"
-            npm publish --registry "$URL" --access "$ACCESS"
-          fi
+          NAME=$(node -p "require('./package.json').name")
+          echo "MULTIPLE_PACKAGES: $NAME -> ${NAME}${SUFFIX}"
+          npm pkg set name="${NAME}${SUFFIX}"
 
       - name: Publish to npmjs.org
+        id: npmjs
         shell: bash
         env:
           REPO_PRIVATE: ${{ github.event.repository.private }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo "NPM_TOKEN не задан — пропускаем публикацию в npmjs.org"
-            exit 0
-          fi
-          if [ "$REPO_PRIVATE" = "true" ]; then
-            ACCESS="restricted"
-          else
-            ACCESS="public"
-          fi
+          if [ "$REPO_PRIVATE" = "true" ]; then ACCESS="restricted"; else ACCESS="public"; fi
           PKG=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           URL="https://registry.npmjs.org"
           if npm view "$PKG@$VERSION" version --registry "$URL" >/dev/null 2>&1; then
             echo "$PKG@$VERSION уже есть в npmjs.org — пропускаем"
+          else
+            echo "npm publish --registry $URL --access $ACCESS (trusted publishing / OIDC)"
+            npm publish --registry "$URL" --access "$ACCESS"
+          fi
+
+      - name: Setup Node for GitHub Packages
+        if: ${{ !cancelled() && steps.npmjs.conclusion != 'skipped' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@${{ github.repository_owner }}'
+
+      - name: Publish to GitHub Packages
+        id: gpr
+        if: ${{ !cancelled() && steps.npmjs.conclusion != 'skipped' }}
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          if [ "$REPO_PRIVATE" = "true" ]; then ACCESS="restricted"; else ACCESS="public"; fi
+          PKG=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          URL="https://npm.pkg.github.com"
+          npm pkg delete publishConfig.registry >/dev/null 2>&1 || true
+          if npm view "$PKG@$VERSION" version --registry "$URL" >/dev/null 2>&1; then
+            echo "$PKG@$VERSION уже есть в GitHub Packages — пропускаем"
           else
             echo "npm publish --registry $URL --access $ACCESS"
             npm publish --registry "$URL" --access "$ACCESS"
@@ -318,16 +328,11 @@ jobs:
         id: meta
         shell: bash
         env:
-          MULTIPLE_PACKAGES: ${{ vars.MULTIPLE_PACKAGES }}
+          SUFFIX: ${{ needs.prepare.outputs.pkg_suffix }}
           BRANCH: ${{ needs.prepare.outputs.branch }}
         run: |
           set -euo pipefail
-          IMG="${DOCKER_IMAGE}"
-          if [ "${MULTIPLE_PACKAGES:-}" = "true" ]; then
-            # Отдельный образ на ветку: owner/repo-<branch> (branch уже санитизирован '/'->'-').
-            # Наличие явной ветки в теге уже гарантировано шагом prepare/resolve.
-            IMG="${IMG}-${BRANCH}"
-          fi
+          IMG="${DOCKER_IMAGE}${SUFFIX}"
           IMAGE="$(echo "${DOCKER_REGISTRY}/${IMG}" | tr '[:upper:]' '[:lower:]')"
 
           TAG="${{ needs.prepare.outputs.tag }}"
@@ -343,13 +348,11 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-          # Теги образа: версия + latest всегда. Тег ветки нужен только в repo-level режиме,
-          # где имя образа общее; при MULTIPLE_PACKAGES ветка уже в имени образа — тег лишний.
           {
             echo "tags<<EOF"
             echo "${IMAGE}:${VERSION}"
             echo "${IMAGE}:latest"
-            if [ "${MULTIPLE_PACKAGES:-}" != "true" ]; then
+            if [ -z "$SUFFIX" ]; then
               echo "${IMAGE}:${BRANCH}"
             fi
             echo "EOF"

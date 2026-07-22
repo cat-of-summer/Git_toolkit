@@ -10,21 +10,23 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 - Опционально собрать проект
 - Подготовить и переименовать файлы релиза (flatten)
 - Создать GitHub Release с автоматически сгенерированным описанием и прикреплёнными файлами
-- Опционально опубликовать артефакт: npm-пакет (в GitHub Packages всегда, и дополнительно в npmjs.org при наличии `NPM_TOKEN`) **или** Docker-образ в реестр
+- Опционально опубликовать артефакт: npm-пакет (в GitHub Packages **и** npmjs.org — оба реестра) **или** Docker-образ в реестр. Публикация в npmjs.org идёт через OIDC trusted publishing (без токена), в GitHub Packages — по встроенному `GITHUB_TOKEN`
 
 Триггеры:
 - `push` с `tags: ['v*', '**/v*']` — релиз при пуше тега. Первый паттерн ловит обычные теги (`v1.2.3`), второй — теги с явной веткой (`{branch}/v1.2.3`, в т.ч. со слешами: `release/1.x/v1.2.3`). Важно: glob `*` не матчит `/`, поэтому без паттерна `**/v*` теги с префиксом ветки workflow бы **не запускали**
-- `workflow_dispatch` с обязательным input `tag` — ручной запуск/повторная публикация по конкретному уже существующему тегу (например, если публикация упала или нужно задним числом опубликовать в npmjs.org). На этом триггере job `await-ci` пропускается — ожидания CI нет
+- `workflow_dispatch` с обязательным input `tag` — ручной запуск/повторная публикация по конкретному уже существующему тегу (например, если публикация упала). На этом триггере job `await-ci` пропускается — ожидания CI нет
 
 Формат тега — **жёстко диктуется** репозиторной переменной `MULTIPLE_PACKAGES` (проверка в самом начале, job `prepare`):
 - `MULTIPLE_PACKAGES` выключен (по умолчанию) → тег обязан быть **плоским** `vX.Y.Z`; целевая ветка (Environment) определяется автоматически по коммиту. Тег с префиксом ветки в этом режиме **отклоняется** с ошибкой.
-- `MULTIPLE_PACKAGES=true` → тег обязан быть с **явной веткой** `{branch}/vX.Y.Z` (например, `main/v1.2.3`). Плоский `vX.Y.Z` в этом режиме **отклоняется**. Ветка берётся из префикса однозначно; её наличие на remote проверяется (`find-branch`), если ветки нет — workflow падает. Префикс `{branch}/` вырезается из версии, поэтому в заголовке релиза и в версии пакета/образа используется только `vX.Y.Z`, а Docker-образ получает суффикс ветки (`owner/repo-<branch>`).
+- `MULTIPLE_PACKAGES=true` → тег обязан быть с **явной веткой** `{branch}/vX.Y.Z` (например, `main/v1.2.3`). Плоский `vX.Y.Z` в этом режиме **отклоняется**. Ветка берётся из префикса однозначно; её наличие на remote проверяется (`find-branch`), если ветки нет — workflow падает. Префикс `{branch}/` вырезается из версии, поэтому в заголовке релиза и в версии пакета/образа используется только `vX.Y.Z`, а имя артефакта получает суффикс ветки: npm-пакет `@owner/name-<branch>`, Docker-образ `owner/repo-<branch>`.
 
 > `MULTIPLE_PACKAGES` должна быть **repository-level** переменной (Settings → Secrets and variables → Actions → Variables), т.к. проверка идёт в `prepare` **до** выбора Environment — environment-scoped значение там не видно.
 
 Права (permissions):
 - `contents: write` — необходимо для создания Release
 - `packages: write` — необходимо для публикации npm-пакета в GitHub Packages и пуша Docker-образа в `ghcr.io`
+
+> Джоба `npm-publish` дополнительно поднимает права до `id-token: write` — это нужно для OIDC trusted publishing в npmjs.org (обмен короткоживущего OIDC-токена GitHub на публикационный токен npm). Без этого права публикация в npmjs.org работать не будет.
 
 ---
 
@@ -113,7 +115,9 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 
 ### npm-publish
 
-Публикует npm-пакет **всегда** в GitHub Packages и **дополнительно** в npmjs.org, если задан секрет `NPM_TOKEN`. Это не выбор одного реестра из двух — при наличии токена публикация идёт в оба параллельно и независимо.
+Публикует npm-пакет в **оба** реестра — GitHub Packages и npmjs.org. Это не выбор одного из двух: публикация идёт в оба, каждый отдельным шагом. Авторизация у них разная:
+- **npmjs.org** — через **OIDC trusted publishing**, без токенов. Требует прав `id-token: write` (заданы в джобе) и настроенного на npmjs.com Trusted Publisher для пакета (см. «Настройка»).
+- **GitHub Packages** — по встроенному `GITHUB_TOKEN` (право `packages: write`), токен пишется в `.npmrc`.
 
 | Поле | Значение |
 |------|----------|
@@ -121,6 +125,7 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 | `needs` | `prepare`, `release` |
 | `if` | `needs.release.outputs.publish_method == 'npm'` |
 | `environment` | `${{ needs.prepare.outputs.branch }}` |
+| `permissions` | `contents: read`, `packages: write`, `id-token: write` |
 
 Переменные окружения:
 
@@ -130,19 +135,18 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 
 Шаги:
 1. Checkout репозитория с `ref: needs.prepare.outputs.ref` (полный реальный тег)
-2. Setup Node.js (`actions/setup-node@v4`, без выбора реестра)
-3. **Build** — аналогично джобе `release`, пропускается если `BUILD_COMMAND` пустой. Выполняется **до** записи публикационных токенов, поэтому установка зависимостей (`npm ci`) использует закоммиченный в репозитории `.npmrc`, если он там есть (например, read-токен для приватных пакетов из GitHub Packages)
-4. **Write .npmrc auth** — дописывает (`>>`) в project-level `.npmrc`:
-   - `//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}` — всегда
-   - `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` — только если секрет `NPM_TOKEN` задан
-   - `always-auth=true`
+2. Setup Node.js (`actions/setup-node@v4`, Node 22, `registry-url: https://registry.npmjs.org`)
+3. **Ensure npm CLI supports trusted publishing** — `npm install -g npm@latest` (trusted publishing требует npm ≥ 11.5.1)
+4. **Build** — аналогично джобе `release`, пропускается если `BUILD_COMMAND` пустой. Выполняется **до** публикации, поэтому установка зависимостей (`npm ci`) использует закоммиченный в репозитории `.npmrc`, если он там есть (например, read-токен для приватных пакетов из GitHub Packages)
+5. **Set version from tag** — берёт тег из `needs.prepare.outputs.tag`; проверяет формат `v#`/`v#.#`/`v#.#.#`; извлекает числа и устанавливает версию пакета через `npm version` (без создания git-тега)
+6. **Apply per-branch package name** — только при `pkg_suffix != ''` (т.е. `MULTIPLE_PACKAGES=true`): `npm pkg set name="<name>-<branch>"`, чтобы каждая ветка публиковалась отдельным пакетом (`@owner/name-<branch>`). Применяется до публикации, поэтому действует на оба реестра
+7. **Publish to npmjs.org** — идёт первым (ему нужен OIDC). Уровень доступа по приватности репозитория (`private` → `restricted`, иначе `public`). Idempotent-проверка `npm view <pkg>@<version> --registry https://registry.npmjs.org` — если версия уже есть, публикация пропускается (важно для повторного `workflow_dispatch` на том же теге)
+8. **Setup Node for GitHub Packages** — повторный `actions/setup-node@v4` с `registry-url: https://npm.pkg.github.com` и `scope: @<owner>` (`github.repository_owner`). Он пишет `.npmrc` с корректной связкой scope↔реестр↔токен (`//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}`). Это нужно потому, что npm 11 удалил опцию `always-auth` и без явной привязки scope к реестру **не отправляет** `GITHUB_TOKEN` на не-дефолтный реестр → `401 unauthenticated` (именно это и была причина падения ручного `.npmrc`-подхода)
+9. **Publish to GitHub Packages** — `if: !cancelled() && steps.npmjs.conclusion != 'skipped'`, т.е. пробуется **даже если npmjs упал** (оба реестра обязательны), но пропускается, если раньше упал Build. Авторизация — `NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}`. Перед публикацией удаляет из локального `package.json` жёсткий `publishConfig.registry` (иначе он навязывает npmjs). Та же idempotent-проверка и логика `--access`
 
-   Файл `.npmrc` может одновременно содержать авторизацию для обоих реестров; работает и если `.npmrc` в репозитории не было (создаётся с нуля)
-5. **Set version from tag** — берёт тег из `needs.prepare.outputs.tag`; проверяет, что он соответствует формату `v#`, `v#.#` или `v#.#.#`; извлекает числа и устанавливает версию пакета через `npm version` (без создания git-тега)
-6. **Publish to GitHub Packages** — выполняется всегда. Уровень доступа определяется по приватности репозитория (`github.event.repository.private`): приватный → `restricted`, публичный → `public`. Перед публикацией проверяет `npm view <pkg>@<version> --registry https://npm.pkg.github.com` — если версия там уже есть, публикация пропускается (идемпотентно, важно для повторного запуска через `workflow_dispatch` на том же теге)
-7. **Publish to npmjs.org** — выполняется только если задан `NPM_TOKEN` (иначе шаг логирует пропуск и завершается успешно, `exit 0`). Та же idempotent-проверка через `npm view ... --registry https://registry.npmjs.org` и та же логика `--access`
+> Имя пакета в `package.json` для GitHub Packages обязано быть scoped (`@owner/name`), причём scope должен совпадать с владельцем репозитория. Для npmjs допускается и unscoped-имя, но при публикации в оба реестра имя должно быть scoped.
 
-> Имя пакета в `package.json` для GitHub Packages обязано быть scoped (`@owner/name`). Для npmjs допускается и unscoped-имя.
+> **Первая публикация нового имени.** OIDC trusted publishing работает для **уже существующего** на npmjs пакета (Trusted Publisher настраивается на странице настроек пакета). Для самого первого публиша нового имени (в т.ч. суффиксованного `@owner/name-<branch>` при `MULTIPLE_PACKAGES=true`) пакет сначала нужно создать разово — например, опубликовать вручную токеном, — а затем настроить Trusted Publisher и переключиться на автоматику.
 
 ### docker-publish
 
@@ -192,10 +196,19 @@ Workflow определяет целевую ветку и использует 
 
 Санитизация: в имени Environment (а также в Docker-теге и заголовке) `/` заменяется на `-`. Поэтому тег `release/1.x/v1.2.3` нацеливается на Environment **`release-1.x`** — именно так и надо назвать Environment в настройках репозитория. Одностегментные ветки (`main`, `develop`) не затрагиваются.
 
-**Отдельный образ на ветку.** Смысл `MULTIPLE_PACKAGES=true`: если на разных ветках живут по сути
-разные проекты, Docker-образ получает суффикс `-<branch>` (`owner/repo-main`, `owner/repo-develop`),
-и образы веток не пересекаются. Именно поэтому режим и обязывает указывать ветку в теге — без
-достоверной ветки имя образа было бы неоднозначным.
+**Отдельный пакет на ветку.** Смысл `MULTIPLE_PACKAGES=true`: если на разных ветках живут по сути
+разные проекты, имя артефакта получает суффикс `-<branch>`, и ветки не пересекаются:
+- npm-пакет → `@owner/name-<branch>` (шаг `Apply per-branch package name`, действует на оба реестра);
+- Docker-образ → `owner/repo-<branch>`.
+
+Именно поэтому режим и обязывает указывать ветку в теге — без достоверной ветки имя было бы
+неоднозначным. Суффикс формируется один раз в `prepare` (output `pkg_suffix`) и потребляется и
+npm-, и docker-джобой.
+
+> Для composer/Packagist суффикс **не применяется**: Packagist читает имя пакета из `composer.json`
+> в самом репозитории (переименовать на лету, как у npm, нельзя), и модель Packagist — «один
+> репозиторий = один пакет». Несколько composer-пакетов делаются отдельными репозиториями, а не
+> ветками одного.
 
 ---
 
@@ -244,8 +257,13 @@ dist/windows/app.exe  →  windows__app.exe
    - `BUILD_COMMAND` — команда сборки (необязательно)
    - `RELEASE_FILES` — glob-паттерны файлов через запятую (необязательно)
    - `PUBLISH_METHOD` — `npm` или `docker` для публикации (необязательно)
-   - npm-пакет всегда публикуется в GitHub Packages; чтобы дополнительно публиковать его и в npmjs.org, добавь секрет `NPM_TOKEN`
-3. Создай и запушь тег:
+   - при `PUBLISH_METHOD=npm` пакет публикуется в **оба** реестра — GitHub Packages (по `GITHUB_TOKEN`, ничего настраивать не нужно) и npmjs.org. Для npmjs.org **токен не нужен** — но требуется один раз настроить **Trusted Publisher** на npmjs.com (см. ниже)
+3. Для публикации в npmjs.org настрой Trusted Publisher (только один раз, на стороне npmjs.com):
+   Package Settings → Trusted Publisher → GitHub Actions → укажи организацию/владельца, репозиторий,
+   имя workflow-файла (`release.yml`), environment оставь пустым. Пакет при этом уже должен
+   существовать на npmjs; для самой первой публикации нового имени — опубликуй разово вручную
+   токеном, затем настрой Trusted Publisher и дальше публикуй автоматически
+4. Создай и запушь тег:
    ```
    git tag v1.0.0
    git push origin v1.0.0
@@ -255,9 +273,10 @@ dist/windows/app.exe  →  windows__app.exe
    git tag main/v1.0.0
    git push origin main/v1.0.0
    ```
-4. Повторная публикация того же тега (например, публикация упала или `NPM_TOKEN` добавили уже
+5. Повторная публикация того же тега (например, публикация упала или Trusted Publisher настроили уже
    после релиза) — запусти workflow вручную (`workflow_dispatch`) с input `tag=v1.0.0`; `await-ci`
-   на этом триггере пропускается, публикация идёт сразу
+   на этом триггере пропускается, публикация идёт сразу (idempotent-проверка пропустит реестры, где
+   версия уже есть)
 
 Примеры значений переменных:
 
@@ -296,9 +315,12 @@ services:
 
 | Секрет | Описание |
 |--------|----------|
-| `GITHUB_TOKEN` | Встроенный токен GitHub Actions, используется для создания Release, публикации npm-пакета в **GitHub Packages** (всегда) и пуша Docker-образа в `ghcr.io` |
-| `NPM_TOKEN` | Токен npmjs.org (npm automation / granular token). Не заменяет публикацию в GitHub Packages, а **дополняет** её: если задан и не пустой — пакет публикуется ещё и в `registry.npmjs.org` |
+| `GITHUB_TOKEN` | Встроенный токен GitHub Actions, используется для создания Release, публикации npm-пакета в **GitHub Packages** и пуша Docker-образа в `ghcr.io` |
 | `DOCKER_TOKEN` | Пароль/токен для входа в нестандартный реестр (когда `DOCKER_REGISTRY` ≠ `ghcr.io`); для `ghcr.io` не нужен |
+
+> Токен npmjs.org (`NPM_TOKEN`) **больше не нужен**: публикация в npmjs.org идёт через OIDC trusted
+> publishing. Вместо секрета настраивается Trusted Publisher на npmjs.com (см. «Настройка»).
+> npm окончательно отключил classic-токены в ноябре 2025, поэтому OIDC — рекомендуемый способ.
 
 Отладка:
 - Если релиз не стартует или зависает — проверь job `await-ci`: она ждёт чек `ci` из `ci-cd.yml`
@@ -312,7 +334,8 @@ services:
 - Если шаг Build падает — проверь `BUILD_COMMAND` в Environment
 - Если файлы не прикрепляются — проверь паттерн `RELEASE_FILES` и результаты сборки; убедись, что хотя бы один файл совпадает
 - Если npm-публикация не запускается — проверь, что `PUBLISH_METHOD=npm` задана в Environment и тег соответствует формату `v#.#.#`
-- Если пакет не появился в npmjs.org — проверь секрет `NPM_TOKEN` (без него публикуется только в GitHub Packages); в GitHub Packages пакет публикуется всегда
+- Если публикация в **npmjs.org** падает с ошибкой авторизации/OIDC — проверь, что настроен Trusted Publisher на npmjs.com (владелец, репозиторий, workflow-файл `release.yml`), что у джобы есть право `id-token: write`, и что пакет с таким именем уже существует на npmjs (для нового имени первый публиш — разово вручную токеном)
+- Если публикация в **GitHub Packages** падает с `401 Unauthorized … unauthenticated` — имя пакета должно быть scoped и scope должен совпадать с владельцем репозитория (`@owner/...`, задаётся в `Setup Node for GitHub Packages` через `github.repository_owner`); если пакет с этим именем ранее был привязан к другому репозиторию, `GITHUB_TOKEN` из текущего может его не перезаписать. Историческая причина 401: npm 11 удалил `always-auth`, поэтому ручной `.npmrc` без scope-привязки перестал слать токен — сейчас за это отвечает отдельный `setup-node` со `scope`
 - Если публикация не происходит, а в логе шага сообщение вида "уже есть — пропускаем" — версия
   из `package.json`/тега уже была опубликована в этом реестре; это не ошибка (idempotent-пропуск).
   Для принудительной переопубликации нужен новый тег/версия
