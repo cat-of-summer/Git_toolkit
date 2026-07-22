@@ -14,7 +14,7 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 
 Триггеры:
 - `push` с `tags: ['v*', '**/v*']` — релиз при пуше тега. Первый паттерн ловит обычные теги (`v1.2.3`), второй — теги с явной веткой (`{branch}/v1.2.3`, в т.ч. со слешами: `release/1.x/v1.2.3`). Важно: glob `*` не матчит `/`, поэтому без паттерна `**/v*` теги с префиксом ветки workflow бы **не запускали**
-- `workflow_dispatch` с обязательным input `tag` — ручной запуск/повторная публикация по конкретному уже существующему тегу (например, если публикация упала). На этом триггере job `await-ci` пропускается — ожидания CI нет
+- `workflow_dispatch` (без inputs) — ручной запуск/повторная публикация. Тег выбирается в дропдауне **«Use workflow from»** при запуске (Run workflow) — нужно указать именно **тег**, а не ветку (иначе `prepare` упадёт с «Запускать нужно на теге»). На этом триггере job `await-ci` пропускается — ожидания CI нет, публикация идёт сразу. Идемпотентные проверки делают повтор на том же теге безопасным
 
 Формат тега — **жёстко диктуется** репозиторной переменной `MULTIPLE_PACKAGES` (проверка в самом начале, job `prepare`):
 - `MULTIPLE_PACKAGES` выключен (по умолчанию) → тег обязан быть **плоским** `vX.Y.Z`; целевая ветка (Environment) определяется автоматически по коммиту. Тег с префиксом ветки в этом режиме **отклоняется** с ошибкой.
@@ -109,15 +109,17 @@ Workflow `.github/workflows/release.yml` автоматически создаё
    - Список staged-файлов передаётся в output `files` (multiline, через EOF-блок)
 4. **Create GitHub Release** — используется `softprops/action-gh-release@v2`:
    - Тег (`tag_name`): `needs.prepare.outputs.ref` — полный реальный тег в git (релиз привязывается к уже существующему тегу, лишний тег не создаётся)
-   - Название: `<branch> release <tag>` (например, `main release v1.2.3`) — ветка из `outputs.branch`, версия из очищенного `outputs.tag` (без префикса `{branch}/`, поэтому без дублирования)
+   - Название зависит от режима: при выключенном `MULTIPLE_PACKAGES` (плоский тег) — просто `Release <tag>` (например, `Release v1.2.3`), без имени ветки; при `MULTIPLE_PACKAGES=true` — `<branch> release <tag>` (например, `main release v1.2.3`), т.к. там ветка значима. Версия — из очищенного `outputs.tag` (без префикса `{branch}/`)
    - Описание: автоматически генерируется из коммитов (`generate_release_notes: true`)
    - Прикреплённые файлы: staged-файлы из шага `stage` (`steps.stage.outputs.files`)
 
 ### npm-publish
 
-Публикует npm-пакет в **оба** реестра — GitHub Packages и npmjs.org. Это не выбор одного из двух: публикация идёт в оба, каждый отдельным шагом. Авторизация у них разная:
-- **npmjs.org** — через **OIDC trusted publishing**, без токенов. Требует прав `id-token: write` (заданы в джобе) и настроенного на npmjs.com Trusted Publisher для пакета (см. «Настройка»).
-- **GitHub Packages** — по встроенному `GITHUB_TOKEN` (право `packages: write`), токен пишется в `.npmrc`.
+Публикует npm-пакет в два реестра, каждый отдельным шагом, с разной ролью:
+- **GitHub Packages** — **обязательный** реестр, публикуется **первым**. Авторизация по встроенному `GITHUB_TOKEN` (право `packages: write`). Если этот шаг падает — падает вся джоба (общая ошибка релиза).
+- **npmjs.org** — **опциональный** (best-effort), идёт вторым, только если GitHub Packages прошёл. Через **OIDC trusted publishing**, без токенов (требует `id-token: write` и настроенного на npmjs.com Trusted Publisher — см. «Настройка»). Помечен `continue-on-error: true`: если публикация не удалась (например, Trusted Publisher не настроен) — это **не роняет** джобу, просто фиксируется как жёлтый (failed, но допустимый) шаг.
+
+Логика намеренно асимметрична: GitHub Packages доступен всегда (по `GITHUB_TOKEN`) и потому обязателен, а npmjs — «бонус», публикация в который лишь пытается выполниться.
 
 | Поле | Значение |
 |------|----------|
@@ -135,14 +137,15 @@ Workflow `.github/workflows/release.yml` автоматически создаё
 
 Шаги:
 1. Checkout репозитория с `ref: needs.prepare.outputs.ref` (полный реальный тег)
-2. Setup Node.js (`actions/setup-node@v4`, Node 22, `registry-url: https://registry.npmjs.org`)
-3. **Ensure npm CLI supports trusted publishing** — `npm install -g npm@latest` (trusted publishing требует npm ≥ 11.5.1)
-4. **Build** — аналогично джобе `release`, пропускается если `BUILD_COMMAND` пустой. Выполняется **до** публикации, поэтому установка зависимостей (`npm ci`) использует закоммиченный в репозитории `.npmrc`, если он там есть (например, read-токен для приватных пакетов из GitHub Packages)
-5. **Set version from tag** — берёт тег из `needs.prepare.outputs.tag`; проверяет формат `v#`/`v#.#`/`v#.#.#`; извлекает числа и устанавливает версию пакета через `npm version` (без создания git-тега)
-6. **Apply per-branch package name** — только при `pkg_suffix != ''` (т.е. `MULTIPLE_PACKAGES=true`): `npm pkg set name="<name>-<branch>"`, чтобы каждая ветка публиковалась отдельным пакетом (`@owner/name-<branch>`). Применяется до публикации, поэтому действует на оба реестра
-7. **Publish to npmjs.org** — идёт первым (ему нужен OIDC). Уровень доступа по приватности репозитория (`private` → `restricted`, иначе `public`). Idempotent-проверка `npm view <pkg>@<version> --registry https://registry.npmjs.org` — если версия уже есть, публикация пропускается (важно для повторного `workflow_dispatch` на том же теге)
-8. **Setup Node for GitHub Packages** — повторный `actions/setup-node@v4` с `registry-url: https://npm.pkg.github.com` и `scope: @<owner>` (`github.repository_owner`). Он пишет `.npmrc` с корректной связкой scope↔реестр↔токен (`//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}`). Это нужно потому, что npm 11 удалил опцию `always-auth` и без явной привязки scope к реестру **не отправляет** `GITHUB_TOKEN` на не-дефолтный реестр → `401 unauthenticated` (именно это и была причина падения ручного `.npmrc`-подхода)
-9. **Publish to GitHub Packages** — `if: !cancelled() && steps.npmjs.conclusion != 'skipped'`, т.е. пробуется **даже если npmjs упал** (оба реестра обязательны), но пропускается, если раньше упал Build. Авторизация — `NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}`. Перед публикацией удаляет из локального `package.json` жёсткий `publishConfig.registry` (иначе он навязывает npmjs). Та же idempotent-проверка и логика `--access`
+2. Setup Node.js (`actions/setup-node@v4`, Node 22, без выбора реестра — дефолтный npmjs для `npm ci` в Build)
+3. **Build** — аналогично джобе `release`, пропускается если `BUILD_COMMAND` пустой. Выполняется **до** публикации, поэтому установка зависимостей (`npm ci`) использует закоммиченный в репозитории `.npmrc`, если он там есть (например, read-токен для приватных пакетов из GitHub Packages)
+4. **Set version from tag** — берёт тег из `needs.prepare.outputs.tag`; проверяет формат `v#`/`v#.#`/`v#.#.#`; извлекает числа и устанавливает версию пакета через `npm version` (без создания git-тега)
+5. **Apply per-branch package name** — только при `pkg_suffix != ''` (т.е. `MULTIPLE_PACKAGES=true`): `npm pkg set name="<name>-<branch>"`, чтобы каждая ветка публиковалась отдельным пакетом (`@owner/name-<branch>`). Применяется до публикации, поэтому действует на оба реестра
+6. **Setup Node for GitHub Packages** — повторный `actions/setup-node@v4` с `registry-url: https://npm.pkg.github.com` и `scope: @<owner>` (`github.repository_owner`). Он пишет `.npmrc` с корректной связкой scope↔реестр↔токен (`//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}`). Это нужно потому, что npm 11 удалил опцию `always-auth` и без явной привязки scope к реестру **не отправляет** `GITHUB_TOKEN` на не-дефолтный реестр → `401 unauthenticated` (именно это и была причина падения ручного `.npmrc`-подхода)
+7. **Publish to GitHub Packages** (обязательный, первый) — авторизация `NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}`. Уровень доступа по приватности репозитория (`private` → `restricted`, иначе `public`). Перед публикацией удаляет из локального `package.json` жёсткий `publishConfig.registry` (иначе он навязывает npmjs). Idempotent-проверка `npm view <pkg>@<version> --registry https://npm.pkg.github.com` — если версия уже есть, пропуск. Падение этого шага роняет всю джобу
+8. **Setup Node for npmjs.org** — `actions/setup-node@v4` с `registry-url: https://registry.npmjs.org` (переключает реестр обратно на npmjs для OIDC-публикации)
+9. **Ensure npm CLI supports trusted publishing** — `npm install -g npm@latest` (trusted publishing требует npm ≥ 11.5.1); стоит прямо перед npmjs-публикацией, чтобы гарантировать нужную версию npm
+10. **Publish to npmjs.org** (опциональный, второй) — `continue-on-error: true`, идёт только если GitHub Packages прошёл; своим падением джобу не роняет. Публикация через OIDC trusted publishing, та же idempotent-проверка и логика `--access`. Пропускается автоматически, если раньше упал Build/GitHub Packages
 
 > Имя пакета в `package.json` для GitHub Packages обязано быть scoped (`@owner/name`), причём scope должен совпадать с владельцем репозитория. Для npmjs допускается и unscoped-имя, но при публикации в оба реестра имя должно быть scoped.
 
@@ -274,9 +277,9 @@ dist/windows/app.exe  →  windows__app.exe
    git push origin main/v1.0.0
    ```
 5. Повторная публикация того же тега (например, публикация упала или Trusted Publisher настроили уже
-   после релиза) — запусти workflow вручную (`workflow_dispatch`) с input `tag=v1.0.0`; `await-ci`
-   на этом триггере пропускается, публикация идёт сразу (idempotent-проверка пропустит реестры, где
-   версия уже есть)
+   после релиза) — запусти workflow вручную: Actions → release → **Run workflow**, в дропдауне
+   **«Use workflow from»** выбери нужный **тег** (`v1.0.0`). `await-ci` на этом триггере пропускается,
+   публикация идёт сразу (idempotent-проверка пропустит реестры, где версия уже есть)
 
 Примеры значений переменных:
 
