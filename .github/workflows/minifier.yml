@@ -2,6 +2,7 @@ name: minifier
 
 on:
   push: {}
+  workflow_call: {}
 
 permissions:
   contents: write

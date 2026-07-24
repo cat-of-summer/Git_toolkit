@@ -1,0 +1,12 @@
+name: minifier
+
+on:
+  push: {}
+
+permissions:
+  contents: write
+
+jobs:
+  minifier:
+    uses: cat-of-summer/Git_toolkit/.github/workflows/minifier.yml@main
+    secrets: inherit

@@ -1,0 +1,26 @@
+name: grabber
+
+on:
+  workflow_dispatch:
+    inputs:
+      commits:
+        description: 'Comma-separated commits to grab files from'
+        required: false
+        type: string
+        default: ''
+      deploy_mirror:
+        description: 'Keep all:false; delete files removed on server:true;'
+        required: false
+        type: string
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  grabber:
+    uses: cat-of-summer/Git_toolkit/.github/workflows/grabber.yml@main
+    secrets: inherit
+    with:
+      commits: ${{ inputs.commits }}
+      deploy_mirror: ${{ inputs.deploy_mirror }}

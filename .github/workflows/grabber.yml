@@ -13,6 +13,18 @@ on:
         required: false
         type: string
         default: 'false'
+  workflow_call:
+    inputs:
+      commits:
+        description: 'Comma-separated commits to grab files from'
+        required: false
+        type: string
+        default: ''
+      deploy_mirror:
+        description: 'Keep all:false; delete files removed on server:true;'
+        required: false
+        type: string
+        default: 'false'
 
 permissions:
   contents: write

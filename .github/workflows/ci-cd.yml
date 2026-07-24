@@ -51,6 +51,50 @@ on:
         type: choice
         options: ['false', 'true', 'full']
         default: 'false'
+  workflow_call:
+    inputs:
+      run_ci:
+        description: 'Собирать и проверять (job ci)'
+        required: false
+        type: boolean
+        default: true
+      run_release:
+        description: 'Создавать Release и публиковать в реестры (только на теге)'
+        required: false
+        type: boolean
+        default: true
+      run_cd:
+        description: 'Деплоить (job cd)'
+        required: false
+        type: boolean
+        default: true
+      environment:
+        description: 'Переопределить окружение (по умолчанию определяется автоматически)'
+        required: false
+        type: string
+        default: ''
+      runs_on:
+        description: 'Переопределить RUNS_ON: ubuntu-latest,windows-latest'
+        required: false
+        type: string
+        default: ''
+      publish_method:
+        # workflow_call не поддерживает type: choice — допустимые значения: '', npm, docker, packagist
+        description: "Переопределить PUBLISH_METHOD ('' | npm | docker | packagist)"
+        required: false
+        type: string
+        default: ''
+      commits:
+        description: 'Comma-separated commits to deploy'
+        required: false
+        type: string
+        default: ''
+      deploy_mirror:
+        # workflow_call не поддерживает type: choice — допустимые значения: false, true, full
+        description: 'Keep all:false; delete files removed in commits:true; mirror sync (deletes untracked):full'
+        required: false
+        type: string
+        default: 'false'
 
 permissions:
   contents: write
