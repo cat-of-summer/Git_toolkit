@@ -137,6 +137,8 @@ jobs:
           *.odp
           *.rtf
           *.epub
+          LICENSE
+          .npmrc
 
           # Audio
           *.mp3
@@ -227,6 +229,7 @@ jobs:
           # Directories
           node_modules/
           vendor/
+          .venv/
           venv/
           dist/
           build/
