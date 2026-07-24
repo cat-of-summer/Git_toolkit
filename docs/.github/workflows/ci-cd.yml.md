@@ -1,221 +1,486 @@
 <!-- DOCGEN:START -->
-# ci-cd.yml — единый CI/CD пайплайн
+# ci-cd.yml — сборка, релиз, публикация и деплой в одном файле
 
-Подробная документация для workflow `.github/workflows/ci-cd.yml`. Один файл, четыре job:
-
-1. **`get-branch`** — определяет GitHub Environment (= имя ветки). Для тегов ветка ищется по
-   коммиту (`git branch -r --contains`), как в `release.yml`; иначе берётся `github.ref_name`.
-2. **`gate`** — читает переменные окружения (их **нельзя** прочитать в `if:` на уровне job) и
-   вычисляет флаги `run_ci` / `run_cd` / `scope` / `commits`.
-3. **`ci`** — сборка/проверки. Запускается, если `run_ci=true`; иначе job **пропускается (серый)**.
-4. **`cd`** — деплой (`COMMAND` / `FTP` / `RSYNC` / `GIT`). `needs: ci`; запускается, если
-   `run_cd=true` и `ci` не упал; иначе **пропускается (серый)**.
-
-Ключевая идея статусов: когда деплоить/собирать нечего — job **серый/skipped**, а не «зелёный
-успешный деплой». Реальные ошибки шагов — **красный**.
-
-Триггеры:
-- `push` — и обычные пуши в ветку, и пуши тега вида `v*` (`tags: ['v*']`); внутри job `gate`
-  они различаются через `github.ref_type` (`branch` / `tag`). Тег нужен для
-  `ACTION_TRIGGER=RELEASE`, как в `release.yml`.
-- `pull_request` — выполняется только `ci` (деплоя нет).
-- `workflow_dispatch` — ручной запуск (выполняется всегда).
-
-Запуск управляется переменной `ACTION_TRIGGER` (на уровне Environment, т.е. **per-branch**):
-
-| `ACTION_TRIGGER` | Когда срабатывает автоматически |
-|------------------|---------------------------------|
-| `DISPATCH` (по умолчанию) | Никогда автоматически — только ручной `workflow_dispatch` |
-| `PUSH` | На каждый push этой ветки |
-| `RELEASE` | При пуше тега на коммите этой ветки, **строго после** `release.yml` |
-
-Входные параметры (`workflow_dispatch`):
-- `commits` — список коммитов через запятую (необязательный; пусто = вся история).
-- `deploy_mirror` — `false/true/full` (по умолчанию `false`): `false` — ничего не удалять; `true` —
-  удалять только файлы, убранные в задеплоенных коммитах (selective); `full` — точная зеркальная
-  синхронизация — снесёт нетрекаемые файлы на сервере.
-
-Переменные окружения (через GitHub `Environments` / `vars`):
-
-| Переменная | Описание | Рекомендация |
-|------------|---------|--------------|
-| `ACTION_TRIGGER` | `DISPATCH` (default) / `PUSH` / `RELEASE` — когда запускать пайплайн | Задаётся per-branch |
-| `BUILD_COMMAND` | Команда сборки (`ci` и `cd`); если пусто — шаг пропускается | Пример: `npm ci && npm run build` |
-| `CI_COMMAND` | Команда проверок в job `ci`; если пусто — шаг пропускается | Пример: `npm test` |
-| `DEPLOY_METHOD` | Метод деплоя: `COMMAND` (default) / `FTP` / `RSYNC` / `GIT` | См. ниже |
-| `DEPLOY_HOST` | Хост или IP сервера | Обязательно для деплоя |
-| `DEPLOY_USER` | SSH/FTP пользователь | Обязательно для деплоя |
-| `DEPLOY_PATH` | Целевая директория на сервере | Обязательно для деплоя |
-| `DEPLOY_LOCAL_DIR` | Локальная директория для деплоя | По умолчанию `./` |
-| `DEPLOY_MIRROR` | `false`/`true`/`full` — режим удаления файлов на сервере (см. ниже) | По умолчанию `false`; `full` опасен |
-| `DEPLOY_PORT` | Порт подключения | По умолчанию `22` |
-| `DEPLOY_LAST_COMMITS` | `true` — при push-деплое брать только коммиты этого push (выборочный режим) | По умолчанию `false` |
-| `BEFORE_DEPLOY_COMMAND` | Команда на сервере **до** деплоя по SSH (не для FTP) | Пример: `php artisan down` |
-| `AFTER_DEPLOY_COMMAND` | Команда на сервере **после** деплоя по SSH (не для FTP) | Пример: `php artisan migrate` |
-
-Режимы `DEPLOY_MIRROR`:
-- `false` — ничего не удалять.
-- `true` — удалять только файлы, убранные в задеплоенных коммитах (выборочная очистка).
-- `full` — точная зеркальная синхронизация: `rsync`/`lftp mirror --delete` или `git reset --hard` —
-  снесёт на сервере вообще все нетрекаемые файлы, не только из коммитов.
-
-Обработка `.git*` при заливке (`FTP`/`RSYNC`; не касается `GIT`/`COMMAND`):
-- `.git` и `.github` **никогда** не заливаются и не удаляются на сервере.
-  Обновлять git на проде — через `BEFORE_DEPLOY_COMMAND`/`AFTER_DEPLOY_COMMAND`.
-- `.gitignore` / `.gitattributes` / `.gitmodules` — заливаются при `DEPLOY_MIRROR=true`/`full`,
-  исключаются при `false` (по умолчанию прод остаётся чистым, как в `grabber.yml`).
-- Прочие dot-файлы (`.env`, `.htaccess`, `.well-known/` …) деплоятся как обычные файлы. ⚠️ В режиме
-  `full` они, как и всё остальное, попадают под `--delete` — будут снесены на сервере, если их нет в репо.
-
-Secrets:
-
-| Секрет | Описание |
-|-------|----------|
-| `DEPLOY_KEY` | Для `RSYNC`/`GIT`/`COMMAND` — приватный SSH-ключ; для `FTP` — пароль |
-
-«Данные для деплоя есть» = заданы все `DEPLOY_HOST` + `DEPLOY_USER` + `DEPLOY_KEY` + `DEPLOY_PATH`.
-Если чего-то нет → `cd` **пропускается (серый)**, это не ошибка. На ручном запуске
-`DEPLOY_MIRROR` берётся из входа `deploy_mirror`; на `push` — из `vars.DEPLOY_MIRROR`.
+Один workflow `.github/workflows/ci-cd.yml` закрывает весь путь от пуша до сервера: собирает
+проект (на нескольких ОС), прикрепляет файлы к GitHub Release, публикует пакет (npm / Docker /
+Packagist) и деплоит. Всё настраивается **переменными окружения**, менять YAML не нужно.
 
 ---
 
-## Методы деплоя
+## Быстрый старт
 
-- **`COMMAND`** (по умолчанию) — не передаёт файлы; просто подключается по SSH и выполняет
-  `BEFORE_DEPLOY_COMMAND`, затем `AFTER_DEPLOY_COMMAND`. Типовой кейс: `docker compose pull && docker compose up -d`.
-- **`FTP` / `RSYNC` / `GIT`** — заливка кодовой базы (полное зеркало или выборочно).
-- **`RSYNC`** при сетевом сбое повторяет каждую операцию передачи до 3 раз с паузой 5с.
+1. Скопируй `ci-cd.yml` в `.github/workflows/` своего проекта.
+2. Создай **Environment** с именем своей ветки (Settings → Environments → New environment,
+   например `main`).
+3. Задай в этом Environment нужные переменные (см. ниже). Минимум для «просто прогонять тесты»:
+   ```
+   ACTION_TRIGGER=PUSH
+   CI_COMMAND=npm test
+   ```
+4. Запушь — workflow запустится сам.
 
-Режим деплоя (`SCOPE`) определяется триггером и переменными:
-
-| Триггер | `DEPLOY_METHOD` | `DEPLOY_LAST_COMMITS` | Режим | Источник файлов |
-|---------|-----------------|-----------------------|-------|-----------------|
-| любой | `COMMAND` | — | none (без файлов) | только команды по SSH |
-| `pull_request` | — | — | деплоя нет (только `ci`) | — |
-| `push` (`PUSH`) | FTP/RSYNC/GIT | `false` | полное зеркало | весь `DEPLOY_LOCAL_DIR` |
-| `push` (`PUSH`) | FTP/RSYNC | `true` | выборочный | коммиты текущего push |
-| `push` тег (`RELEASE`) | FTP/RSYNC/GIT | — | полное зеркало | весь `DEPLOY_LOCAL_DIR` |
-| `workflow_dispatch` | FTP/RSYNC | — | выборочный | вход `commits` (пусто = вся история) |
-
-- ⚠️ `GIT` несовместим с выборочным режимом (он подтягивает ветку целиком) — `cd` завершается ошибкой (🔴).
+Ничего лишнего задавать не надо: любая незаданная переменная просто выключает свой шаг, а джоба
+становится **серой (skipped)**, а не красной. Красный статус = реальная ошибка команды.
 
 ---
 
-## Модель статусов
+## Как задавать переменные и секреты
 
-`get-branch` и `gate` всегда зелёные; реальный статус несут `ci` и `cd`.
+Всё берётся из **GitHub Environments** (Settings → Environments → выбрать окружение):
 
-Гейт `ci`/`cd`:
+- **Variables** — обычные значения (`vars.*`). Все переменные из таблиц ниже — отсюда.
+- **Secrets** — чувствительные значения (`secrets.*`): ключи, токены, пароли.
 
-| event | ref_type | `ACTION_TRIGGER` | ci | cd |
-|---|---|---|---|---|
-| push | branch | `PUSH` | run | run |
-| push | branch | `DISPATCH`/`RELEASE` | серый | серый |
-| push | tag | `RELEASE` | run | run (ждёт `release.yml`) |
-| push | tag | `DISPATCH`/`PUSH` | серый | серый |
-| workflow_dispatch | — | любой | run | run |
-| pull_request | — | — | run | серый |
+Имя Environment = имя ветки. Для веток со слешами `/` заменяется на `-`: ветке `release/1.x`
+соответствует Environment `release-1.x`.
 
-Внутри `ci`: есть `BUILD_COMMAND`/`CI_COMMAND` → выполняет (оба, если заданы), 🟢; нет ни одной →
-серый; ошибка команды → 🔴 (тогда `cd` не запускается).
+Разные окружения = разные настройки: можно собирать `main` под npm, а `develop` — только тесты.
 
-Внутри `cd` (`run_cd=true`): `COMMAND` → SSH + before/after, 🟢/🔴; `FTP`/`RSYNC`/`GIT` → деплой по
-scope, 🟢/🔴; `GIT`+selective → 🔴; ошибка деплоя → 🔴.
+> **Одно исключение:** `MULTIPLE_PACKAGES` задаётся **на уровне репозитория**
+> (Settings → Secrets and variables → Actions → Variables), а не в Environment. Причина — внизу
+> страницы.
 
 ---
 
-## Связка с `release.yml` (ACTION_TRIGGER=RELEASE)
+## Переменные
 
-При пуше тега `v*` запускаются оба workflow, и связь между ними двусторонняя:
+Колонки «ci / release / cd» показывают, какая часть пайплайна переменную читает.
 
-1. `ci-cd.yml` (эта job `ci`) собирает и проверяет код.
-2. `release.yml` (job `await-ci`) сам дожидается зелёного чека `ci` из `ci-cd.yml` и только
-   после этого резолвит тег/ветку и запускает релиз.
-3. `release.yml` собирает и пушит артефакт (npm-пакет / Docker-образ).
-4. `cd` (эта job) ждёт окончания `release.yml` через `lewagon/wait-on-check-action`
-   (чеки `release` / `npm-publish` / `docker-publish`) и только потом деплоит.
+### Что и когда запускать
 
-Итоговая цепочка при пуше тега: `ci` → `release.yml` (`await-ci` → `prepare` → `release` →
-`npm-publish`/`docker-publish`) → `cd`.
+| Переменная | Область | По умолчанию | Значения / смысл |
+|---|---|---|---|
+| `ACTION_TRIGGER` | все | `WORKFLOW_DISPATCH` | Когда пайплайн «активен» — см. таблицу ниже. `WORKFLOW_DISPATCH` / `PUSH` / `RELEASE` |
 
-- Если `ci` **упал** — `release.yml` не публикует ничего (`await-ci` не пропускает дальше).
-- Если `release.yml` **упал** — ожидание в `cd` завершается неуспехом, `cd` → 🔴 (деплой над сломанным релизом бессмыслен).
-- Если `ci-cd.yml`/`release.yml` не настроен или нужного чека нет — соответствующая сторона не ждёт
-  (`fail-on-no-checks: false`) и продолжает сама по себе.
+### Сборка и проверки (ci)
+
+| Переменная | Область | По умолчанию | Значения / смысл |
+|---|---|---|---|
+| `BUILD_COMMAND` | ci | пусто | Команда сборки. Пусто → шаг пропускается. Пример: `npm ci && npm run build` |
+| `CI_COMMAND` | ci | пусто | Команда проверок/тестов. Пусто → шаг пропускается. Пример: `npm test` |
+| `RUNS_ON` | ci | `ubuntu-latest` | ОС сборки через запятую. `ubuntu-latest,windows-latest,macos-latest` |
+| `TOOLCHAIN` | ci | пусто | Языки и версии через запятую: `node:24,python:3.12`. Пусто → берутся предустановленные на runner'е |
+
+### Релиз (release-publish)
+
+| Переменная | Область | По умолчанию | Значения / смысл |
+|---|---|---|---|
+| `RELEASE_FILES` | release | пусто | Какие файлы прикрепить к Release. Glob'ы через запятую: `dist/*.zip,bin/app-*` |
+| `PUBLISH_METHOD` | release | пусто | Куда публиковать после релиза: `npm` / `docker` / `packagist`. Пусто → не публиковать |
+| `MULTIPLE_PACKAGES` | release | `false` | **repository-level.** `true` → отдельный пакет/образ на каждую ветку |
+
+### Публикация Docker (при `PUBLISH_METHOD=docker`)
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `DOCKER_REGISTRY` | `ghcr.io` | Реестр |
+| `DOCKER_IMAGE` | `<owner>/<repo>` | Имя образа без реестра |
+| `DOCKERFILE_PATH` | `./Dockerfile` | Путь к Dockerfile |
+| `BUILD_CONTEXT` | `.` | Контекст сборки |
+| `DOCKER_USERNAME` | `github.actor` | Логин для нестандартного реестра (для `ghcr.io` не нужен) |
+| `DOCKER_BUILD_ARGS` | пусто | Доп. build-args, по одному на строку |
+
+### Публикация Packagist (при `PUBLISH_METHOD=packagist`)
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `PACKAGIST_USERNAME` | — | Имя пользователя Packagist |
+
+### Деплой (cd)
+
+| Переменная | По умолчанию | Смысл |
+|---|---|---|
+| `DEPLOY_METHOD` | `COMMAND` | `COMMAND` (только SSH-команды) / `FTP` / `RSYNC` / `GIT` |
+| `DEPLOY_HOST` | — | Хост сервера. **Обязателен для деплоя** |
+| `DEPLOY_USER` | — | Пользователь. **Обязателен** |
+| `DEPLOY_PATH` | — | Каталог на сервере. **Обязателен** |
+| `DEPLOY_LOCAL_DIR` | `./` | Что заливать: локальный каталог-источник |
+| `DEPLOY_MIRROR` | `false` | `false` — ничего не удалять; `true` — удалять убранное в коммитах; `full` — точное зеркало (⚠️ снесёт всё лишнее на сервере). `full` **нельзя** сочетать с `DEPLOY_LAST_COMMITS=true` |
+| `DEPLOY_PORT` | `22` | Порт |
+| `DEPLOY_LAST_COMMITS` | `false` | `true` → на push деплоить только файлы этого push (выборочно) |
+| `BEFORE_DEPLOY_COMMAND` | пусто | Команда по SSH **до** деплоя (не для FTP). Пример: `php artisan down` |
+| `AFTER_DEPLOY_COMMAND` | пусто | Команда по SSH **после** деплоя (не для FTP). Пример: `docker compose pull && docker compose up -d` |
+
+Деплой включается, только когда заданы **все четыре**: `DEPLOY_HOST` + `DEPLOY_USER` +
+`DEPLOY_PATH` + секрет `DEPLOY_KEY`. Иначе `cd` серая.
+
+### Секреты
+
+| Секрет | Где нужен | Смысл |
+|---|---|---|
+| `GITHUB_TOKEN` | всегда | Встроенный, задавать не надо. Release, GitHub Packages, `ghcr.io` |
+| `DEPLOY_KEY` | cd | Приватный SSH-ключ; для `FTP` — пароль |
+| `DOCKER_TOKEN` | docker | Пароль для нестандартного реестра (для `ghcr.io` не нужен) |
+| `PAT_TOKEN` | docker | Пробрасывается в образ как build-arg `GH_TOKEN` (если нужен приватный доступ на сборке) |
+| `PACKAGIST_API_TOKEN` | packagist | Токен Packagist |
+
+> Токен npmjs **не нужен**: публикация идёт через OIDC trusted publishing (см. настройку внизу).
 
 ---
 
-## Шаги job `cd` (кратко)
+## Что именно выполнится: ACTION_TRIGGER
 
-1. `Wait for release workflow` — только для тега; ждёт `release.yml`.
-2. `Validate deploy mode` — проверка `GIT`+selective (→ 🔴).
-3. `Setup SSH key` — при `RSYNC`/`GIT`/`COMMAND` (временный `TMP_KEY`).
-4. `Checkout` + (выборочный) `Resolve REF_COMMIT` / `Resolve changed files` — при `SCOPE != none`.
-5. `Build` — если задан `BUILD_COMMAND` и `SCOPE != none`.
-6. `Before deploy command` — по SSH (не для FTP).
-7. Деплой по методу/режиму (`FTP` / `RSYNC` / `GIT`; для `COMMAND` файловых шагов нет).
-8. `After deploy command` — по SSH (не для FTP).
-9. `Cleanup SSH key`.
+`ACTION_TRIGGER` задаёт, при каком событии пайплайн «активен».
 
-Примеры конфигураций (Environment vars):
+| `ACTION_TRIGGER` | Событие | ci | release | cd |
+|---|---|:--:|:--:|:--:|
+| `WORKFLOW_DISPATCH` (по умолчанию) | push ветки/тега | — | — | — |
+| `WORKFLOW_DISPATCH` | ручной запуск на ветке | ✔ | — | ✔ |
+| `WORKFLOW_DISPATCH` | ручной запуск на теге | ✔ | ✔ | ✔ |
+| `PUSH` | push ветки | ✔ | — | ✔ |
+| `PUSH` | push тега | ✔ | ✔ | ✔ |
+| `RELEASE` | push ветки | — | — | — |
+| `RELEASE` | push тега | ✔ | ✔ | ✔ |
+| любой | pull request | ✔ | — | — |
 
-1) Автодеплой при пуше через `rsync`, с CI-проверками:
+Кратко:
+- **`WORKFLOW_DISPATCH`** (по умолчанию) — автоматически ничего. Только ручной запуск
+  (Actions → Run workflow) даёт ci + cd; релиз — если запущен на теге.
+- **`PUSH`** — на каждый push этой ветки идут ci + cd; на push тега добавляется релиз.
+- **`RELEASE`** — на push ветки ничего, релиз и деплой только на push тега.
+- **pull request** — всегда только ci (чтобы чек разрешал слияние), деплоя нет.
+
+`release` бывает лишь на теге: без тега публиковать нечего. `cd` требует заданных `DEPLOY_*`.
+
+---
+
+## Ручной запуск: входы
+
+Actions → **ci/cd** → **Run workflow**. В **Use workflow from** выбирается ветка **или тег**
+(релиз возможен только при выборе тега).
+
+| Вход | Тип | По умолчанию | Что делает |
+|---|---|---|---|
+| `run_ci` | галочка | вкл | Снять — пропустить сборку и тесты |
+| `run_release` | галочка | вкл | Снять — не трогать Release и реестры |
+| `run_cd` | галочка | вкл | Снять — не деплоить |
+| `environment` | строка | пусто | Задать окружение вручную (переопределяет автоопределение) |
+| `runs_on` | строка | пусто | Переопределить `RUNS_ON` на этот запуск |
+| `publish_method` | список | пусто | Переопределить `PUBLISH_METHOD` |
+| `commits` | строка | пусто | Список коммитов через запятую для выборочного деплоя |
+| `deploy_mirror` | список | `false` | `false` / `true` / `full` на этот запуск |
+
+Галочки только **снимают** флаг: если `ACTION_TRIGGER` не разрешает деплой, включённая
+`run_cd` его не добавит.
+
+**Переопубликовать тег** (публикация упала / Trusted Publisher настроили позже): Run workflow,
+в **Use workflow from** выбрать тег, снять `run_ci` и `run_cd` — пойдёт только релиз и публикация.
+Повтор безопасен: уже опубликованные версии пропускаются.
+
+---
+
+## Как настраивается сборка под несколько ОС
+
+`RUNS_ON=ubuntu-latest,windows-latest` → сборка идёт на обеих; в Release попадут артефакты обеих.
+
+В `BUILD_COMMAND` доступны:
+- `$RUNNER_OS` — `Linux` / `Windows` / `macOS`;
+- `$MATRIX_OS` — `ubuntu-latest` / `windows-latest` / …
+
+Имена результатов **должны различаться по ОС**, иначе они перезапишут друг друга:
+```
+BUILD_COMMAND=pyinstaller --onefile --name "app-$RUNNER_OS" main.py
+RELEASE_FILES=dist/app-*
+```
+
+---
+
+## TOOLCHAIN: языки и версии
+
+Формат `<инструмент>:<версия>` через запятую. Версию можно опустить — будет `latest`.
 
 ```
+TOOLCHAIN=node:24
+TOOLCHAIN=node:24,python:3.12
+TOOLCHAIN=go:1.23,php:8.3
+```
+
+Список **открытый**: node, python, go, php, java, ruby, rust, bun, deno, terraform и сотни
+других. Добавить язык = дописать в переменную, YAML не трогать. Пусто → используются версии,
+предустановленные на runner'е.
+
+---
+
+## Формат тега
+
+Определяется repository-level переменной `MULTIPLE_PACKAGES`:
+
+- **`false` (по умолчанию)** — тег плоский: `v1.2.3`. Ветку (Environment) workflow определяет
+  сам, по коммиту тега.
+- **`true`** — тег с явной веткой: `main/v1.2.3`. Ветка берётся из префикса, имя пакета/образа
+  получает суффикс (`@owner/name-main`, `owner/repo-main`).
+
+Допустимы `v#`, `v#.#`, `v#.#.#`. Для пакета/образа версия очищается: `v1.2.3` → `1.2.3`.
+
+```
+git tag v1.0.0 && git push origin v1.0.0
+# либо при MULTIPLE_PACKAGES=true:
+git tag main/v1.0.0 && git push origin main/v1.0.0
+```
+
+---
+
+## Настройка публикации
+
+### npm (`PUBLISH_METHOD=npm`)
+
+Пакет уходит в **оба** реестра: GitHub Packages (по `GITHUB_TOKEN`, настраивать нечего) и
+npmjs.org. Для npmjs токен не нужен, но один раз настрой **Trusted Publisher**:
+
+npmjs.com → Package Settings → Trusted Publisher → GitHub Actions → укажи владельца, репозиторий,
+имя workflow-файла **`ci-cd.yml`**, environment оставь пустым.
+
+Требования: имя в `package.json` scoped и совпадает с владельцем (`@owner/name`); **не коммить
+`.npmrc` с токенами** (перебивает авторизацию и утекает). Для самого первого публиша нового имени
+на npmjs — опубликуй разово вручную токеном, потом включай Trusted Publisher.
+
+### docker (`PUBLISH_METHOD=docker`)
+
+Нужен `Dockerfile`. Собранные файлы уже лежат в контексте сборки, поэтому в образе достаточно
+`COPY dist/ /app/` без пересборки. Для `ghcr.io` секреты не нужны.
+
+```
+PUBLISH_METHOD=docker
+DOCKER_IMAGE=myorg/myapp        # опционально
+DOCKERFILE_PATH=./docker/Dockerfile  # опционально
+```
+
+### packagist (`PUBLISH_METHOD=packagist`)
+
+```
+PUBLISH_METHOD=packagist
+PACKAGIST_USERNAME=<user>
+# secret: PACKAGIST_API_TOKEN
+```
+
+---
+
+## Примеры конфигураций
+
+**Тесты + автодеплой по rsync на каждый push:**
+```
 ACTION_TRIGGER=PUSH
+TOOLCHAIN=node:24
+BUILD_COMMAND=npm ci && npm run build
 CI_COMMAND=npm test
 DEPLOY_METHOD=RSYNC
 DEPLOY_HOST=example.com
 DEPLOY_USER=deploy
 DEPLOY_PATH=/var/www/project
-DEPLOY_LOCAL_DIR=build/
+DEPLOY_LOCAL_DIR=dist/
 DEPLOY_MIRROR=true
-BUILD_COMMAND=npm ci && npm run build
-BEFORE_DEPLOY_COMMAND=php artisan down
 AFTER_DEPLOY_COMMAND=php artisan migrate && php artisan up
+# secret: DEPLOY_KEY
 ```
 
-2) Деплой Docker-образа при релизе (только команды на сервере):
-
+**Бинарники Linux + Windows в Release:**
 ```
 ACTION_TRIGGER=RELEASE
+RUNS_ON=ubuntu-latest,windows-latest
+TOOLCHAIN=python:3.12
+BUILD_COMMAND=pip install pyinstaller && pyinstaller --onefile --name "app-$RUNNER_OS" main.py
+RELEASE_FILES=dist/app-*
+```
+
+**Docker-образ из собранного + деплой командой:**
+```
+ACTION_TRIGGER=RELEASE
+TOOLCHAIN=node:24
+BUILD_COMMAND=npm ci && npm run build
+PUBLISH_METHOD=docker
 DEPLOY_METHOD=COMMAND
 DEPLOY_HOST=example.com
 DEPLOY_USER=deploy
 DEPLOY_PATH=/srv/app
 AFTER_DEPLOY_COMMAND=docker compose pull && docker compose up -d
-# DEPLOY_KEY — SSH-ключ как secret
-# в release.yml: PUBLISH_METHOD=docker
+# secret: DEPLOY_KEY
 ```
 
-3) FTP, выборочный деплой указанных коммитов (ручной запуск):
-
+**Только релиз с публикацией в npm (без деплоя):**
 ```
-DEPLOY_METHOD=FTP
-DEPLOY_HOST=ftp.example.com
-DEPLOY_USER=ftpuser
-DEPLOY_PATH=./public_html
-DEPLOY_KEY=<ftp-password-as-secret>
-
-# workflow_dispatch:
-commits=abc123,def456,7890ab
-deploy_mirror=true
+ACTION_TRIGGER=RELEASE
+TOOLCHAIN=node:24
+BUILD_COMMAND=npm ci && npm run build
+PUBLISH_METHOD=npm
+# DEPLOY_* не заданы → cd серая
 ```
 
-4) Только CI (без деплоя): `ACTION_TRIGGER=PUSH`, задайте `CI_COMMAND`/`BUILD_COMMAND` и не
-   задавайте данные деплоя — `cd` пропустится (серый).
+---
 
-Безопасность и рекомендации:
-- `DEPLOY_MIRROR=full` — самый опасный режим: снесёт на сервере все нетрекаемые файлы
-  (`rsync`/`lftp --delete`, `git reset --hard`). Используйте только если сервер должен быть
-  точным зеркалом репозитория.
-- `DEPLOY_MIRROR=true` безопаснее — удаляет только файлы, убранные в задеплоенных коммитах.
-- Для больших наборов коммитов сначала протестируйте на тестовом окружении.
-- Тестируйте `BUILD_COMMAND` / `CI_COMMAND` локально перед пушем.
+## Если что-то не запускается
 
-Отладка:
-- `gate` логирует `run_ci / run_cd / method / scope` — отсюда понятно, почему `ci`/`cd` серые.
-- Если `cd` не запустился — проверьте `ACTION_TRIGGER` для нужного окружения и наличие `DEPLOY_HOST/USER/KEY/PATH`.
-- При `RELEASE` смотрите лог шага `Wait for release workflow`: дождался ли он `release.yml`.
+- **Всё серое.** Смотри лог джобы `resolve-config`: там печатаются `ACTION_TRIGGER`, событие и
+  итоговые `run_ci / run_release / run_cd`. Чаще всего `ACTION_TRIGGER` не тот.
+- **`cd` серая при `ACTION_TRIGGER=PUSH`.** Заданы не все из `DEPLOY_HOST/USER/PATH` + секрет
+  `DEPLOY_KEY`.
+- **`ci` серая.** Не заданы ни `BUILD_COMMAND`, ни `CI_COMMAND`.
+- **Ошибка на формате тега.** Тег не соответствует режиму `MULTIPLE_PACKAGES` — в сообщении
+  указано, какая форма ожидается.
+- **`Branch '...' from tag not found`.** В теге `{branch}/vX.Y.Z` указана несуществующая ветка.
+- **Файлы не попали в Release.** Проверь `RELEASE_FILES`; собранных файлов нет в дереве, если
+  `ci` не запускалась (`run_ci=false`).
+- **Собранное не доехало до сервера.** Скорее всего сработал выборочный режим деплоя — см.
+  предупреждение в логе `cd` (деплой результатов сборки работает только в полном режиме).
+- **PR не разблокируется.** При нескольких ОС имя чека — `ci (ubuntu-latest)`, а не `ci`;
+  обнови требуемые чеки в branch protection.
+- **npm `401` (GitHub Packages).** Имя пакета должно быть scoped и совпадать с владельцем; в
+  репозитории не должно быть закоммиченного `.npmrc`.
+- **npm OIDC падает.** Не настроен Trusted Publisher, либо в нём осталось старое имя файла, либо
+  пакета ещё нет на npmjs.
+- **«уже есть — пропускаем».** Не ошибка: версия уже опубликована. Нужен новый тег.
+
+---
+
+## Миграция со старой схемы (`ci-cd.yml` + `release.yml`)
+
+Если проект использовал раздельные workflow:
+
+1. **Переименуй переменные Environment:**
+
+   | Было | Стало |
+   |---|---|
+   | `BUILD_MATRIX=["ubuntu-latest","windows-latest"]` | `RUNS_ON=ubuntu-latest,windows-latest` |
+   | `BUILD_ARTIFACT_COMMAND` | `BUILD_COMMAND` |
+   | `BUILD_ARTIFACT_PATH` | удалить (каталог задаёт сама команда) |
+   | `PYTHON_VERSION=3.12` | `TOOLCHAIN=python:3.12` |
+   | `ACTION_TRIGGER=DISPATCH` | `ACTION_TRIGGER=WORKFLOW_DISPATCH` (старое пока принимается с warning) |
+
+2. **npmjs Trusted Publisher** привязан к имени файла: в настройках каждого опубликованного
+   пакета замени `release.yml` на `ci-cd.yml`, иначе OIDC-публикация начнёт падать.
+3. **`ACTION_TRIGGER` теперь влияет и на релиз, и на деплой** (раньше — только на деплой).
+   Проверь, что для нужных веток стоит `PUSH` или `RELEASE`.
+4. Удали старые `release.yml` и (если был) `python-build.yml` — их работу делает `ci-cd.yml`.
+
+---
+---
+
+# Как это устроено (справочно)
+
+Ниже — внутренняя механика; для настройки проекта читать не обязательно.
+
+## Граф джоб
+
+```
+resolve-branch               резолв Environment + тега + суффикса пакета
+└─ resolve-config env:<ветка>  vars → run_ci / run_release / run_cd / scope / список ОС
+   └─ ci          matrix RUNS_ON, env:<ветка>
+      │           BUILD_COMMAND + CI_COMMAND → артефакт workspace-<os>
+      ├─ release-publish            RELEASE_FILES → GitHub Release
+      │  ├─ npm-publish             PUBLISH_METHOD=npm
+      │  ├─ docker-publish          PUBLISH_METHOD=docker
+      │  └─ packagist-publish       PUBLISH_METHOD=packagist
+      └─ cd       needs: [ci, release-publish, все *-publish]
+                  DEPLOY_LOCAL_DIR → сервер
+```
+
+Раньше пайплайн был разнесён на `ci-cd.yml` + `release.yml` и склеен ожиданием чужих чеков
+(`lewagon/wait-on-check-action`) — это давало только порядок, без передачи файлов. Теперь всё в
+одном run: зависимости через `needs:`, собранные файлы едут дальше артефактом.
+
+## Поток файлов
+
+Джоба `ci` выгружает `workspace-<os>` — **весь рабочий каталог** (исходники + результаты сборки).
+Нижестоящие джобы делают свой checkout и распаковывают артефакт поверх, получая уже собранное
+дерево. Дальше каждая берёт свою выборку: `release-publish` — `RELEASE_FILES`, `cd` —
+`DEPLOY_LOCAL_DIR`, docker/npm — весь каталог как контекст.
+
+Отдельной переменной под каталог сборки нет намеренно: путь определяет сама `BUILD_COMMAND`,
+поэтому выгружается всё. Артефакт живёт один день (только внутри run). Скрытые файлы
+(`.git`, `.github`, `.env`, `.npmrc`) в артефакт **не попадают** — `upload-artifact` их не берёт;
+если сборка пишет в скрытый каталог (`.next`, `.output`), направь вывод в обычный (`dist/`).
+
+При нескольких ОС артефакты сливаются; одинаковые пути перезаписываются (для исходников
+безвредно, поэтому имена сборочных результатов должны различаться по ОС).
+
+## Правило запуска (джоба resolve-config)
+
+```
+PR      = событие pull_request
+ACTIVE  = ручной запуск
+        | push ветки при ACTION_TRIGGER=PUSH
+        | push тега   при ACTION_TRIGGER=PUSH или RELEASE
+
+run_ci      = (PR или ACTIVE) и задана BUILD_COMMAND или CI_COMMAND
+run_release = ACTIVE и это тег
+run_cd      = ACTIVE и не PR и заданы DEPLOY_HOST + USER + KEY + PATH
+```
+Галочки ручного запуска применяются сверху и могут только снять флаг. Старое
+`ACTION_TRIGGER=DISPATCH` нормализуется в `WORKFLOW_DISPATCH` с предупреждением.
+
+## Почему две служебные джобы, а не одна
+
+`resolve-branch` вычисляет имя Environment и потому **не может** быть к нему привязана. А
+переменные окружения читаются только внутри джобы, у которой `environment:` уже указан, — и
+недоступны ни в job-level `if:`, ни в `strategy.matrix`. Поэтому чтение `vars` и расчёт флагов
+вынесены в отдельную `resolve-config` с `environment: <ветка>`. По той же причине
+`MULTIPLE_PACKAGES` обязана быть repository-level: она читается в `resolve-branch` до выбора
+Environment.
+
+## Почему ветку нельзя «просто узнать» из тега
+
+Git-тег указывает на коммит, а не на ветку — имя ветки в теге не хранится. Если коммит достижим
+из нескольких веток, тег принадлежит им всем. Автоопределение (`git branch -r --contains`) — это
+догадка; единственный надёжный способ привязать релиз к ветке — назвать её в теге
+(`MULTIPLE_PACKAGES=true`) или задать входом `environment` при ручном запуске.
+
+## Установка TOOLCHAIN
+
+Ставит [mise](https://mise.jdx.dev) (MIT, бесплатный). Воркфлоу скачивает один бинарник mise
+(для каждой ОС свой, архивов и `unzip` не требуется), выполняет `mise use --global <tools>` и
+кладёт в `PATH` и шимы, и реальные каталоги `bin` (шимов одних мало: на Windows `command -v`
+их не находит). Установленные инструменты кешируются между запусками по ОС и составу `TOOLCHAIN`.
+
+Источник бинаря mise — по убыванию: CDN mise (`mise.jdx.dev`, без лимитов) → endpoint `VERSION` →
+GitHub API → вшитая в workflow версия-фолбэк. Специальной переменной для версии mise нет —
+цепочка фолбэков подбирает её сама.
+
+> В `npm-publish` node ставится через `actions/setup-node` (версия — из `TOOLCHAIN`): он нужен
+> ради `.npmrc` c registry-url и scope, чего шимы не делают.
+
+## flatten имён файлов Release
+
+Чтобы файлы из разных каталогов не конфликтовали именами, `/` в относительном пути заменяется
+на `__`:
+```
+dist/linux/app        →  linux__app
+dist/windows/app.exe  →  windows__app.exe
+```
+
+## Порядок в npm-publish
+
+GitHub Packages — обязательный, первым, по `GITHUB_TOKEN`; npmjs — опциональный
+(`continue-on-error`), вторым, по OIDC. Между ними переустанавливается `setup-node` со `scope`:
+scoped-registry приоритетнее флага `--registry`, без перезаписи публикация в npmjs ушла бы в
+GitHub Packages и дала `401`. Перед каждой публикацией — идемпотентная проверка `npm view`.
+Шаг `Drop committed .npmrc` удаляет закоммиченный project-level `.npmrc`, который иначе перебил бы
+`NODE_AUTH_TOKEN`.
+
+## Режимы деплоя
+
+- `COMMAND` — файлы не передаются, только `BEFORE_/AFTER_DEPLOY_COMMAND` по SSH.
+- `FTP` / `RSYNC` / `GIT` — заливка кодовой базы; `RSYNC`/`FTP` повторяют операцию при сбоях.
+
+Режим (`SCOPE`) выбирается автоматически: `COMMAND` → `none`; push тега или push без
+`DEPLOY_LAST_COMMITS` → `full` (весь `DEPLOY_LOCAL_DIR`); push с `DEPLOY_LAST_COMMITS=true` или
+ручной запуск с `commits` → `selective` (только изменённые файлы).
+
+> **Результаты сборки деплоятся только при полном режиме (`full`-scope).** В выборочном список
+> файлов строится из git-истории, а собранных файлов в git нет; к тому же дерево переводится на
+> другой коммит. Поэтому в выборочном режиме артефакт не распаковывается, а вместо него
+> выполняется `BUILD_COMMAND` на месте (джоба предупреждает в логе).
+
+Несовместимые сочетания (джоба падает с понятной ошибкой):
+- `GIT` + выборочный режим — `GIT` тянет ветку целиком, а не подмножество файлов.
+- `DEPLOY_MIRROR=full` + выборочный режим — `full` означает точное зеркало всего дерева, что
+  противоречит идее «залить только изменённые файлы»; для очистки убранного в коммитах есть
+  `DEPLOY_MIRROR=true`.
+
+`.git` и `.github` при заливке никогда не передаются и не удаляются.
+
+## Порядок и ожидание в cd
+
+`cd` зависит от `ci`, `release-publish` и всех `*-publish`, поэтому стартует строго после них —
+`docker compose pull` не выполнится раньше, чем образ запушен. Пропущенные зависимости (не-тег →
+релизные джобы серые) не блокируют за счёт условия `!failure() && !cancelled()`.
 
 <!-- DOCGEN:END -->
