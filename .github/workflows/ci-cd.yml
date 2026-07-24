@@ -630,7 +630,7 @@ jobs:
 
   npm-publish:
     needs: [resolve-branch, resolve-config, release-publish]
-    if: ${{ !failure() && !cancelled() && needs.resolve-config.outputs.publish_method == 'npm' }}
+    if: ${{ !failure() && !cancelled() && needs.resolve-config.outputs.run_release == 'true' && needs.resolve-config.outputs.publish_method == 'npm' }}
     runs-on: ubuntu-latest
 
     environment: ${{ needs.resolve-branch.outputs.environment }}
@@ -777,7 +777,7 @@ jobs:
 
   docker-publish:
     needs: [resolve-branch, resolve-config, release-publish]
-    if: ${{ !failure() && !cancelled() && needs.resolve-config.outputs.publish_method == 'docker' }}
+    if: ${{ !failure() && !cancelled() && needs.resolve-config.outputs.run_release == 'true' && needs.resolve-config.outputs.publish_method == 'docker' }}
     runs-on: ubuntu-latest
 
     environment: ${{ needs.resolve-branch.outputs.environment }}
@@ -867,7 +867,7 @@ jobs:
 
   packagist-publish:
     needs: [resolve-branch, resolve-config, release-publish]
-    if: ${{ !failure() && !cancelled() && needs.resolve-config.outputs.publish_method == 'packagist' }}
+    if: ${{ !failure() && !cancelled() && needs.resolve-config.outputs.run_release == 'true' && needs.resolve-config.outputs.publish_method == 'packagist' }}
     runs-on: ubuntu-latest
 
     environment: ${{ needs.resolve-branch.outputs.environment }}
