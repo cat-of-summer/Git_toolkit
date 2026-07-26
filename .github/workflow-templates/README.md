@@ -1,19 +1,20 @@
-# Reusable workflows — Git_toolkit
+# Reusable workflows — git_toolkit
 
 Здесь лежат **тонкие workflow-шаблоны** для реальных проектов. Вся логика живёт в
-`cat-of-summer/Git_toolkit/.github/workflows/*.yml` и подключается как
+`cat-of-summer/git_toolkit/.github/workflows/*.yml` и подключается как
 [reusable workflow](https://docs.github.com/actions/using-workflows/reusing-workflows).
 
 ## Как подключить
 
 1. Скопируй нужный файл из этой папки в `.github/workflows/` своего проекта.
 2. Задай в своём репозитории нужные **Variables** и **Secrets**
-   (Settings → Secrets and variables → Actions), см. таблицы ниже.
+   (Settings → Secrets and variables → Actions, либо Settings → Environments) —
+   полные таблицы см. в документации конкретного workflow, ссылки ниже.
 3. Готово. Шаблон вызывает логику отсюда:
    ```yaml
    jobs:
      ci-cd:
-       uses: cat-of-summer/Git_toolkit/.github/workflows/ci-cd.yml@main
+       uses: cat-of-summer/git_toolkit/.github/workflows/ci-cd.yml@main
        secrets: inherit
    ```
 
@@ -21,7 +22,7 @@
 объявлять их по отдельности не нужно.
 
 **`vars` и `secrets`** внутри логики резолвятся из **твоего** репозитория и его окружений
-(environments), а не из Git_toolkit. То есть каждый проект настраивает себя сам.
+(environments), а не из git_toolkit. То есть каждый проект настраивает себя сам.
 
 **Закрепление версии.** Шаблоны ссылаются на `@main`. Для стабильности можно закрепиться на
 теге или коммите: `...@v1` или `...@<sha>`.
@@ -31,99 +32,13 @@
 
 ---
 
-## minifier
+## Шаблоны
 
-Минифицирует `.css`/`.js` при каждом `push` и коммитит `*.min.*` обратно.
+| Шаблон | Триггеры | Назначение | Настройка |
+|---|---|---|---|
+| `ci-cd.yml` | `push` (ветки и теги `v*`), `pull_request`, `workflow_dispatch` | Сборка и тесты, GitHub Release, публикация в npm / Docker / Packagist, деплой | Переменные и секреты в Environment — [документация](../../docs/.github/workflows/ci-cd.yml.md) |
+| `grabber.yml` | `workflow_dispatch` | Забирает файлы с сервера в репозиторий, складывает в ветку `sync/...` | `DEPLOY_*` + секрет `DEPLOY_KEY` — [документация](../../docs/.github/workflows/grabber.yml.md) |
+| `docgen.yml` | `push`, `workflow_dispatch` | Держит структуру `docs/` в соответствии с деревом репозитория | Только `docs/.docignore` — [документация](../../docs/.github/workflows/docgen.yml.md) |
+| `minifier.yml` | `push` | Минифицирует `.css` и `.js`, коммитит `*.min.*` | Не настраивается — [документация](../../docs/.github/workflows/minifier.yml.md) |
 
-- **Variables:** не требуются.
-- **Secrets:** не требуются (используется автоматический `GITHUB_TOKEN`).
-- **Permissions:** `contents: write`.
-
-## docgen
-
-Генерирует зеркальную структуру документации в `docs/` при `push` / вручную.
-
-- **Variables:** не требуются.
-- **Secrets:** не требуются.
-- **Permissions:** `contents: write`.
-
-## grabber
-
-Забирает файлы из указанных коммитов и деплоит на сервер (только `workflow_dispatch`).
-Использует **environment = имя ветки** — создай в проекте environment с именем ветки и
-положи туда переменные/секреты ниже.
-
-| Тип     | Имя                | Назначение                                              |
-|---------|--------------------|---------------------------------------------------------|
-| var     | `DEPLOY_HOST`      | Хост сервера                                             |
-| var     | `DEPLOY_USER`      | SSH-пользователь                                         |
-| var     | `DEPLOY_PATH`      | Путь на сервере                                          |
-| var     | `DEPLOY_METHOD`    | Метод деплоя                                             |
-| var     | `DEPLOY_PORT`      | SSH-порт (по умолчанию `22`)                             |
-| var     | `DEPLOY_LOCAL_DIR` | Локальная папка-источник (по умолчанию `./`)            |
-| secret  | `DEPLOY_KEY`       | Приватный SSH-ключ                                       |
-
-- **Inputs:** `commits`, `deploy_mirror` (прокидываются шаблоном).
-- **Permissions:** `contents: write`.
-
-## ci-cd
-
-Полный CI/CD: сборка/проверка, Release + публикация в реестры (на теге), деплой.
-Триггеры: `push` (ветки и теги `v*`), `pull_request`, `workflow_dispatch`.
-
-Окружение определяется автоматически (обычно по имени ветки) — заведи соответствующие
-environments в проекте и распредели переменные/секреты по ним.
-
-**Общие / CI:**
-
-| Тип | Имя                | Назначение                                                     |
-|-----|--------------------|----------------------------------------------------------------|
-| var | `ACTION_TRIGGER`   | `WORKFLOW_DISPATCH` \| `PUSH` \| `RELEASE`                      |
-| var | `PUBLISH_METHOD`   | `npm` \| `docker` \| `packagist`                               |
-| var | `RUNS_ON`          | Раннеры, напр. `ubuntu-latest` (можно `a,b` через запятую)      |
-| var | `TOOLCHAIN`        | Тулчейн сборки (поддерживает разделители `:` и `@`)            |
-| var | `BUILD_COMMAND`    | Команда сборки                                                  |
-| var | `CI_COMMAND`       | Команда проверки/тестов                                         |
-| var | `MULTIPLE_PACKAGES`| Суффикс имени пакета по ветке (npm/docker)                      |
-| var | `RELEASE_FILES`    | Файлы, прикладываемые к GitHub Release                          |
-
-**Публикация — Docker:**
-
-| Тип    | Имя                 | Назначение                          |
-|--------|---------------------|-------------------------------------|
-| var    | `DOCKER_REGISTRY`   | Реестр                              |
-| var    | `DOCKER_IMAGE`      | Имя образа                          |
-| var    | `DOCKERFILE_PATH`   | Путь к Dockerfile                   |
-| var    | `BUILD_CONTEXT`     | Контекст сборки                     |
-| var    | `DOCKER_USERNAME`   | Пользователь реестра                |
-| var    | `DOCKER_BUILD_ARGS` | build-args                          |
-| secret | `DOCKER_TOKEN`      | Токен реестра                       |
-| secret | `PAT_TOKEN`         | PAT (напр. для GitHub Packages)     |
-
-**Публикация — Packagist:**
-
-| Тип    | Имя                   | Назначение              |
-|--------|-----------------------|-------------------------|
-| var    | `PACKAGIST_USERNAME`  | Пользователь Packagist  |
-| secret | `PACKAGIST_API_TOKEN` | API-токен Packagist     |
-
-**Деплой (job cd):**
-
-| Тип    | Имя                     | Назначение                          |
-|--------|-------------------------|-------------------------------------|
-| var    | `DEPLOY_HOST`           | Хост                                |
-| var    | `DEPLOY_USER`           | SSH-пользователь                    |
-| var    | `DEPLOY_PATH`           | Путь на сервере                     |
-| var    | `DEPLOY_METHOD`         | Метод деплоя                        |
-| var    | `DEPLOY_PORT`           | SSH-порт                            |
-| var    | `DEPLOY_LOCAL_DIR`      | Локальная папка-источник            |
-| var    | `DEPLOY_MIRROR`         | Режим зеркалирования по умолчанию   |
-| var    | `DEPLOY_LAST_COMMITS`   | Кол-во последних коммитов           |
-| var    | `BEFORE_DEPLOY_COMMAND` | Команда до деплоя                   |
-| var    | `AFTER_DEPLOY_COMMAND`  | Команда после деплоя                |
-| secret | `DEPLOY_KEY`            | Приватный SSH-ключ                  |
-
-- **Inputs:** `run_ci`, `run_release`, `run_cd`, `environment`, `runs_on`,
-  `publish_method`, `commits`, `deploy_mirror` (прокидываются шаблоном при
-  ручном запуске).
-- **Permissions:** `contents: write`, `packages: write`.
+Полный индекс документации — [`docs/README.md`](../../docs/README.md).

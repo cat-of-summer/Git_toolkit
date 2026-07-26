@@ -9,51 +9,31 @@
 
 <!-- DOCGEN:END -->
 
-Коллекция готовых `.gitignore` шаблонов для популярных CMS и фреймворков.
-Каждый шаблон заточен под конкретную платформу: не трекает core/runtime, трекает только исходники проекта.
-
-## Как использовать
-
-Скопируй нужный `.gitignore` в корень проекта:
-
-```bash
-# Для Bitrix-проекта
-cp .gitignore/Bitrix/.gitignore /path/to/project/.gitignore
-
-# Для WordPress-проекта
-cp .gitignore/Wordpress/.gitignore /path/to/project/.gitignore
-```
-
-Затем пересобери индекс, если репозиторий уже инициализирован:
-
-```bash
-git rm -r --cached .
-git add .
-git commit -m "Apply .gitignore"
-```
-
-## Шаблоны
+Готовые `.gitignore` под конкретные платформы: не трекают core и runtime, трекают только исходники
+проекта.
 
 | Шаблон | Исключает | Трекает |
-|--------|-----------|--------|
-| [Bitrix](Bitrix/) | `/bitrix/` core, кеши, загрузки, логи | `/local/`, шаблоны, конфигурацию |
-| [Wordpress](Wordpress/) | `/wp-admin/`, `/wp-includes/`, плагины, кеши | `/wp-content/themes/`, конфигурацию |
+|---|---|---|
+| [Bitrix](Bitrix/.gitignore.md) | `/bitrix/` core, кеши, `/upload/`, логи, бэкапы, секреты | `/local/`, шаблоны, `.settings.php.sample` |
+| [Wordpress](Wordpress/.gitignore.md) | `/wp-admin/`, `/wp-includes/`, `/wp-*.php`, плагины, uploads, кеши | `/wp-content/themes/`, `wp-config-sample.php`, `.htaccess`, `robots.txt` |
+| [Python](Python/.gitignore.md) | `__pycache__/`, venv, `dist/`, `build/`, кеши тестов и линтеров, `.env` | исходники, `.env.example` |
 
-Здесь собраны шаблонные решения .gitignore, чтобы вновь применить правила в уже созданном репозитории:
+## Как применить
 
-# 1 Добавляем .gitignore и коммитим его
+Скопируй нужный файл в корень проекта:
+
+```bash
+cp .gitignore/Bitrix/.gitignore /path/to/project/.gitignore
+```
+
+Если репозиторий уже существует и файлы попали в индекс раньше — пересобери индекс, иначе новые
+правила не подействуют на уже отслеживаемые файлы:
+
 ```bash
 git add .gitignore
-git commit -m "Update .gitignore."
-```
+git commit -m "Update .gitignore"
 
-# 2 Прекратить отслеживать файлы в индексе (оставит файлы на диске)
-```bash
-git rm -r --cached .
-```
-
-# 3 Добавить всё по-новой (индекс пересобран с учётом .gitignore)
-```bash
-git add .
+git rm -r --cached .        # снять с отслеживания (файлы на диске остаются)
+git add .                   # добавить заново, уже с учётом правил
 git commit -m "Rebuild index according to updated .gitignore"
 ```

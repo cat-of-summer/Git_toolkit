@@ -10,32 +10,32 @@ on:
   workflow_dispatch:
     inputs:
       run_ci:
-        description: 'Собирать и проверять (job ci)'
+        description: 'Build and test (job ci)'
         required: false
         type: boolean
         default: true
       run_release:
-        description: 'Создавать Release и публиковать в реестры (только на теге)'
+        description: 'Create a Release and publish to registries (tag only)'
         required: false
         type: boolean
         default: true
       run_cd:
-        description: 'Деплоить (job cd)'
+        description: 'Deploy (job cd)'
         required: false
         type: boolean
         default: true
       environment:
-        description: 'Переопределить окружение (по умолчанию определяется автоматически)'
+        description: 'Override the environment (resolved automatically by default)'
         required: false
         type: string
         default: ''
       runs_on:
-        description: 'Переопределить RUNS_ON: ubuntu-latest,windows-latest'
+        description: 'Override RUNS_ON: ubuntu-latest,windows-latest'
         required: false
         type: string
         default: ''
       publish_method:
-        description: 'Переопределить PUBLISH_METHOD'
+        description: 'Override PUBLISH_METHOD'
         required: false
         type: choice
         options: ['', 'npm', 'docker', 'packagist']
@@ -54,33 +54,33 @@ on:
   workflow_call:
     inputs:
       run_ci:
-        description: 'Собирать и проверять (job ci)'
+        description: 'Build and test (job ci)'
         required: false
         type: boolean
         default: true
       run_release:
-        description: 'Создавать Release и публиковать в реестры (только на теге)'
+        description: 'Create a Release and publish to registries (tag only)'
         required: false
         type: boolean
         default: true
       run_cd:
-        description: 'Деплоить (job cd)'
+        description: 'Deploy (job cd)'
         required: false
         type: boolean
         default: true
       environment:
-        description: 'Переопределить окружение (по умолчанию определяется автоматически)'
+        description: 'Override the environment (resolved automatically by default)'
         required: false
         type: string
         default: ''
       runs_on:
-        description: 'Переопределить RUNS_ON: ubuntu-latest,windows-latest'
+        description: 'Override RUNS_ON: ubuntu-latest,windows-latest'
         required: false
         type: string
         default: ''
       publish_method:
-        # workflow_call не поддерживает type: choice — допустимые значения: '', npm, docker, packagist
-        description: "Переопределить PUBLISH_METHOD ('' | npm | docker | packagist)"
+        # workflow_call does not support type: choice — allowed values: '', npm, docker, packagist
+        description: "Override PUBLISH_METHOD ('' | npm | docker | packagist)"
         required: false
         type: string
         default: ''
@@ -90,7 +90,7 @@ on:
         type: string
         default: ''
       deploy_mirror:
-        # workflow_call не поддерживает type: choice — допустимые значения: false, true, full
+        # workflow_call does not support type: choice — allowed values: false, true, full
         description: 'Keep all:false; delete files removed in commits:true; mirror sync (deletes untracked):full'
         required: false
         type: string
@@ -124,7 +124,7 @@ jobs:
           set -euo pipefail
 
           if [ "$REF_TYPE" != "tag" ]; then
-            echo "Ref '$REF_NAME' — не тег, релизная часть пайплайна не применяется."
+            echo "Ref '$REF_NAME' is not a tag — the release part of the pipeline does not apply."
             {
               echo "is_tag=false"
               echo "ref="
@@ -150,12 +150,12 @@ jobs:
 
           if [ "${MULTIPLE_PACKAGES:-}" = "true" ]; then
             if [ -z "$BRANCH_EXPLICIT" ]; then
-              echo "::error::MULTIPLE_PACKAGES=true: тег обязан быть в форме '{branch}/vX.Y.Z' (got '$FULL_TAG')." >&2
+              echo "::error::MULTIPLE_PACKAGES=true: the tag must have the form '{branch}/vX.Y.Z' (got '$FULL_TAG')." >&2
               exit 1
             fi
           else
             if [ -n "$BRANCH_EXPLICIT" ]; then
-              echo "::error::MULTIPLE_PACKAGES выключен: тег обязан быть в форме 'vX.Y.Z' без префикса ветки (got '$FULL_TAG'). Включите MULTIPLE_PACKAGES=true для тегов '{branch}/vX.Y.Z'." >&2
+              echo "::error::MULTIPLE_PACKAGES is off: the tag must have the form 'vX.Y.Z' without a branch prefix (got '$FULL_TAG'). Set MULTIPLE_PACKAGES=true to use '{branch}/vX.Y.Z' tags." >&2
               exit 1
             fi
           fi
@@ -193,7 +193,7 @@ jobs:
 
           if [ -n "${INPUT_ENVIRONMENT:-}" ]; then
             REAL_BRANCH="$INPUT_ENVIRONMENT"
-            echo "Environment переопределён входом workflow_dispatch."
+            echo "Environment overridden by the workflow_dispatch input."
           elif [ "$EVENT" = "pull_request" ]; then
             REAL_BRANCH="$BASE_REF"
           elif [ "$IS_TAG" = "true" ]; then
@@ -265,12 +265,12 @@ jobs:
 
           case "$ACTION_TRIGGER" in
             DISPATCH)
-              echo "::warning::ACTION_TRIGGER=DISPATCH устарел — переименуйте значение в WORKFLOW_DISPATCH."
+              echo "::warning::ACTION_TRIGGER=DISPATCH is deprecated — rename the value to WORKFLOW_DISPATCH."
               ACTION_TRIGGER=WORKFLOW_DISPATCH
               ;;
             WORKFLOW_DISPATCH|PUSH|RELEASE) ;;
             *)
-              echo "::error::Недопустимое ACTION_TRIGGER='$ACTION_TRIGGER'. Допустимо: WORKFLOW_DISPATCH | PUSH | RELEASE." >&2
+              echo "::error::Invalid ACTION_TRIGGER='$ACTION_TRIGGER'. Allowed: WORKFLOW_DISPATCH | PUSH | RELEASE." >&2
               exit 1
               ;;
           esac
@@ -340,13 +340,13 @@ jobs:
             | paste -sd, - || true)
           OS_JSON="[${OS_JSON}]"
           if [ "$OS_JSON" = "[]" ]; then
-            echo "::error::RUNS_ON='$OS_LIST' не содержит ни одного runner'а." >&2
+            echo "::error::RUNS_ON='$OS_LIST' does not contain a single runner." >&2
             exit 1
           fi
 
           case "${PUBLISH_METHOD:-}" in
             ''|npm|docker|packagist) ;;
-            *) echo "::warning::Неизвестный PUBLISH_METHOD='$PUBLISH_METHOD' — публикация выполняться не будет. Допустимо: npm | docker | packagist." ;;
+            *) echo "::warning::Unknown PUBLISH_METHOD='$PUBLISH_METHOD' — nothing will be published. Allowed: npm | docker | packagist." ;;
           esac
 
           echo "ACTION_TRIGGER=$ACTION_TRIGGER event=$EVENT is_tag=$IS_TAG active=$ACTIVE pr=$PR"
@@ -405,9 +405,9 @@ jobs:
           tools="${tools# }"
 
           if [ -z "$tools" ]; then
-            echo "TOOLCHAIN не задан — установка инструментов пропускается."
+            echo "TOOLCHAIN is not set — skipping tool installation."
           else
-            echo "Инструменты: $tools"
+            echo "Tools: $tools"
           fi
 
           if [ -n "${MISE_DATA_DIR:-}" ]; then
@@ -446,12 +446,12 @@ jobs:
             Linux)   os=linux ;;
             macOS)   os=macos ;;
             Windows) os=windows ;;
-            *) echo "::error::Неподдерживаемая ОС RUNNER_OS='$RUNNER_OS'." >&2; exit 1 ;;
+            *) echo "::error::Unsupported OS RUNNER_OS='$RUNNER_OS'." >&2; exit 1 ;;
           esac
           case "$RUNNER_ARCH" in
             X64)   arch=x64 ;;
             ARM64) arch=arm64 ;;
-            *) echo "::error::Неподдерживаемая архитектура RUNNER_ARCH='$RUNNER_ARCH'." >&2; exit 1 ;;
+            *) echo "::error::Unsupported architecture RUNNER_ARCH='$RUNNER_ARCH'." >&2; exit 1 ;;
           esac
           ext=""
           if [ "$os" = "windows" ]; then ext=".exe"; fi
@@ -465,7 +465,7 @@ jobs:
           MISE_FALLBACK_VERSION="v2026.7.12"
 
           try_download() {
-            echo "  пробую $1"
+            echo "  trying $1"
             curl -fsSL --retry 3 --retry-delay 2 -o "$mise" "$1" 2>/dev/null || return 1
             chmod +x "$mise" 2>/dev/null || true
             "$mise" --version >/dev/null 2>&1 || return 1
@@ -477,11 +477,11 @@ jobs:
           }
 
           ok=false
-          echo "Определяю версию mise…"
+          echo "Resolving mise version…"
           if try_download "https://mise.jdx.dev/mise-latest-${os}-${arch}${ext}"; then
             ok=true
           else
-            echo "::warning::CDN mise недоступен — пробую VERSION endpoint и GitHub API."
+            echo "::warning::The mise CDN is unavailable — trying the VERSION endpoint and the GitHub API."
             ver=$(curl -fsSL --retry 2 https://mise.jdx.dev/VERSION 2>/dev/null | tr -d '[:space:]' || true)
             if [ -n "$ver" ]; then
               case "$ver" in v*) ;; *) ver="v$ver" ;; esac
@@ -498,13 +498,13 @@ jobs:
               if [ -n "$ver" ] && try_download "$(release_url "$ver")"; then ok=true; fi
             fi
             if [ "$ok" != "true" ]; then
-              echo "::warning::Ни CDN, ни API не ответили — откатываюсь на вшитую рабочую версию $MISE_FALLBACK_VERSION."
+              echo "::warning::Neither the CDN nor the API responded — falling back to the pinned working version $MISE_FALLBACK_VERSION."
               if try_download "$(release_url "$MISE_FALLBACK_VERSION")"; then ok=true; fi
             fi
           fi
 
           if [ "$ok" != "true" ]; then
-            echo "::error::Не удалось скачать mise. Проверьте доступ runner'а к github.com и mise.jdx.dev." >&2
+            echo "::error::Failed to download mise. Check the runner's access to github.com and mise.jdx.dev." >&2
             exit 1
           fi
           echo "mise $("$mise" --version)"
@@ -606,7 +606,7 @@ jobs:
           if [ ${#staged[@]} -eq 0 ]; then
             echo "::error::No files matched RELEASE_FILES: $RELEASE_FILES" >&2
             if [ "$RUN_CI" != "true" ]; then
-              echo "::error::Job 'ci' не запускался (run_ci=$RUN_CI), поэтому результатов сборки в дереве нет — файлы ищутся только среди закоммиченных." >&2
+              echo "::error::Job 'ci' did not run (run_ci=$RUN_CI), so there are no build results in the tree — only committed files are searched." >&2
             fi
             exit 1
           fi
@@ -672,7 +672,7 @@ jobs:
           done <<< "$(printf '%s' "${TOOLCHAIN:-}" | tr ',' '\n')"
           if [ -z "$node" ]; then
             node="lts/*"
-            echo "::notice::TOOLCHAIN не задаёт node — для публикации берётся lts/*."
+            echo "::notice::TOOLCHAIN does not specify node — using lts/* for publishing."
           fi
           echo "node=$node" >> "$GITHUB_OUTPUT"
 
@@ -734,12 +734,12 @@ jobs:
           URL="https://npm.pkg.github.com"
           npm pkg delete publishConfig.registry >/dev/null 2>&1 || true
           if npm view "$PKG@$VERSION" version --registry "$URL" >/dev/null 2>&1; then
-            echo "$PKG@$VERSION уже есть в GitHub Packages — пропускаем"
+            echo "$PKG@$VERSION already exists in GitHub Packages — skipping"
           else
             echo "npm publish --registry $URL --access $ACCESS"
             if ! npm publish --registry "$URL" --access "$ACCESS"; then
               echo "::group::npm debug log"
-              cat "$(ls -t ~/.npm/_logs/*-debug-*.log 2>/dev/null | head -1)" 2>/dev/null || echo "(debug-лог не найден)"
+              cat "$(ls -t ~/.npm/_logs/*-debug-*.log 2>/dev/null | head -1)" 2>/dev/null || echo "(debug log not found)"
               echo "::endgroup::"
               exit 1
             fi
@@ -769,7 +769,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           URL="https://registry.npmjs.org"
           if npm view "$PKG@$VERSION" version --registry "$URL" >/dev/null 2>&1; then
-            echo "$PKG@$VERSION уже есть в npmjs.org — пропускаем"
+            echo "$PKG@$VERSION already exists in npmjs.org — skipping"
           else
             echo "npm publish --registry $URL --access $ACCESS (trusted publishing / OIDC)"
             npm publish --registry "$URL" --access "$ACCESS"
@@ -888,7 +888,7 @@ jobs:
             -d "{\"repository\":{\"url\":\"${REPO_URL}\"}}")
 
           if [ "$update_code" -ge 200 ] && [ "$update_code" -lt 300 ]; then
-            echo "Packagist: пакет обновлён."
+            echo "Packagist: package updated."
             cat /tmp/packagist.out; echo
             exit 0
           fi
@@ -899,7 +899,7 @@ jobs:
             exit 1
           fi
 
-          echo "Packagist: пакет не найден, создаю (первая публикация)…"
+          echo "Packagist: package not found, creating it (first publish)…"
           create_code=$(curl -sS -o /tmp/packagist.out -w '%{http_code}' -X POST \
             -H 'Content-Type: application/json' \
             -H "Authorization: Bearer ${PACKAGIST_USERNAME}:${PACKAGIST_API_TOKEN}" \
@@ -907,10 +907,10 @@ jobs:
             -d "{\"repository\":\"${REPO_URL}\"}")
 
           if [ "$create_code" -ge 200 ] && [ "$create_code" -lt 300 ]; then
-            echo "Packagist: пакет создан."
+            echo "Packagist: package created."
             cat /tmp/packagist.out; echo
           else
-            echo "::error::Packagist create failed (HTTP $create_code) — нужен MAIN API-токен."
+            echo "::error::Packagist create failed (HTTP $create_code) — a MAIN API token is required."
             cat /tmp/packagist.out; echo
             exit 1
           fi
@@ -955,11 +955,11 @@ jobs:
             *) echo "::error::Invalid DEPLOY_MIRROR='$DEPLOY_MIRROR'. Allowed: false | true | full."; exit 1 ;;
           esac
           if [ "$SCOPE" = "selective" ] && [ "$DEPLOY_MIRROR" = "full" ]; then
-            echo "::error::DEPLOY_MIRROR=full несовместим с выборочным деплоем (DEPLOY_LAST_COMMITS=true или workflow_dispatch с commits). 'full' — это точное зеркало всего дерева, а выборочный режим работает с подмножеством файлов. Для удаления файлов, убранных в задеплоенных коммитах, используйте DEPLOY_MIRROR=true."
+            echo "::error::DEPLOY_MIRROR=full is incompatible with selective deploy (DEPLOY_LAST_COMMITS=true or workflow_dispatch with commits). 'full' means an exact mirror of the whole tree, while selective mode works with a subset of files. To delete files removed in the deployed commits, use DEPLOY_MIRROR=true."
             exit 1
           fi
           if [ "$SCOPE" = "selective" ] && [ "$RUN_CI" = "true" ]; then
-            echo "::warning::SCOPE=selective — результаты сборки из job 'ci' не деплоятся: список файлов строится из git-истории, а собранные файлы в git отсутствуют. Для их деплоя нужен SCOPE=full."
+            echo "::warning::SCOPE=selective — build results from job 'ci' are not deployed: the file list is built from git history, and built files are not in git. Deploying them requires SCOPE=full."
           fi
           echo "Resolved: method=$DEPLOY_METHOD scope=$SCOPE mirror=$DEPLOY_MIRROR commits='$COMMITS'"
 
@@ -1027,7 +1027,7 @@ jobs:
             tools="$tools $name@$ver"
           done <<< "$(printf '%s' "${TOOLCHAIN:-}" | tr ',' '\n')"
           tools="${tools# }"
-          echo "Инструменты: ${tools:-<нет>}"
+          echo "Tools: ${tools:-<none>}"
           echo "tools=$tools" >> "$GITHUB_OUTPUT"
 
       - name: Install toolchain
@@ -1063,13 +1063,13 @@ jobs:
               if try_download "$(release_url "$ver")"; then ok=true; fi
             fi
             if [ "$ok" != "true" ]; then
-              echo "::warning::CDN mise недоступен — откатываюсь на вшитую версию $MISE_FALLBACK_VERSION."
+              echo "::warning::The mise CDN is unavailable — falling back to the pinned version $MISE_FALLBACK_VERSION."
               if try_download "$(release_url "$MISE_FALLBACK_VERSION")"; then ok=true; fi
             fi
           fi
 
           if [ "$ok" != "true" ]; then
-            echo "::error::Не удалось скачать mise. Проверьте доступ runner'а к github.com и mise.jdx.dev." >&2
+            echo "::error::Failed to download mise. Check the runner's access to github.com and mise.jdx.dev." >&2
             exit 1
           fi
 

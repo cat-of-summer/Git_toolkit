@@ -1,5 +1,5 @@
 <!-- DOCGEN:START -->
-# Git_toolkit
+# git_toolkit
 
 ## Папки
 
@@ -7,10 +7,62 @@
 - [.gitignore](.gitignore/)
 
 <!-- DOCGEN:END -->
-3. README в корне `docs/` служит как общий справочник — здесь перечислены ключевые workflow и ссылки на их подробные страницы.
 
-Контакты и процессы:
-- Автоматические коммиты (docgen, minifier) выполняются от имени `github-actions[bot]`.
-- Перед пушем в `main` рекомендовано тестировать workflow на отдельной ветке (например, `ci-test`).
+Набор готовых **reusable workflow** для GitHub Actions и шаблонов `.gitignore`. Подключается в
+чужой проект копированием тонкого шаблона — логика остаётся здесь и обновляется централизованно.
 
+## Workflow
 
+| Workflow | Триггеры | Назначение |
+|---|---|---|
+| [ci-cd](.github/workflows/ci-cd.yml.md) | `push` (ветки и теги `v*`), `pull_request`, `workflow_dispatch` | Сборка и тесты на нескольких ОС, GitHub Release, публикация в npm / Docker / Packagist, деплой на сервер |
+| [grabber](.github/workflows/grabber.yml.md) | `workflow_dispatch` | Забирает файлы с сервера в репозиторий и складывает их в ветку `sync/...` |
+| [docgen](.github/workflows/docgen.yml.md) | `push`, `workflow_dispatch` | Держит структуру `docs/` в соответствии с деревом репозитория |
+| [minifier](.github/workflows/minifier.yml.md) | `push` | Минифицирует `.css` и `.js`, коммитит `*.min.*` рядом с исходниками |
+
+## Шаблоны подключения
+
+В `.github/workflow-templates/` лежат тонкие шаблоны — по несколько строк каждый:
+
+```yaml
+jobs:
+  ci-cd:
+    uses: cat-of-summer/git_toolkit/.github/workflows/ci-cd.yml@main
+    secrets: inherit
+```
+
+- `secrets: inherit` передаёт все секреты вызывающего репозитория — объявлять их поштучно не нужно.
+- `vars` и `secrets` резолвятся из **твоего** репозитория и его Environments, а не из git_toolkit:
+  каждый проект настраивает себя сам.
+- Ссылка `@main` даёт свежую версию; для стабильности можно закрепиться на теге или коммите
+  (`...@v1`, `...@<sha>`).
+- Блок `permissions:` в шаблоне не удаляй: права `GITHUB_TOKEN` у reusable workflow не могут
+  превышать права вызывающего.
+
+## Быстрый старт (ci-cd)
+
+1. Скопируй `.github/workflow-templates/ci-cd.yml` в `.github/workflows/` своего проекта.
+2. Settings → Environments → New environment, имя = имя ветки (например `main`; слеши в имени ветки
+   заменяются на дефис: `release/1.x` → `release-1.x`).
+3. В этом Environment задай Variables:
+   ```
+   ACTION_TRIGGER=PUSH
+   CI_COMMAND=npm test
+   ```
+4. Запушь в `main` — прогонятся тесты.
+
+Дальше — по [полной документации ci-cd](.github/workflows/ci-cd.yml.md): сборка на нескольких ОС,
+релизы по тегам, публикация в реестры, деплой. Незаданная переменная просто выключает свой шаг,
+а джоба становится серой, а не красной.
+
+## Шаблоны .gitignore
+
+Готовые `.gitignore` под Bitrix, WordPress и Python — см. [`.gitignore/`](.gitignore/).
+
+## Служебное
+
+- [`docs/.docignore`](.docignore) — что docgen **не** документирует; единственная настройка docgen.
+- Автоматические коммиты (`docgen`, `minifier`, `grabber`) выполняются от имени
+  `github-actions[bot]`.
+- Новый workflow или изменение переменных удобно обкатывать на отдельной ветке с собственным
+  Environment, а не сразу в `main`.

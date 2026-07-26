@@ -10,13 +10,16 @@
 
 <!-- DOCGEN:END -->
 
-Все автоматизированные процессы репозитория. Запускаются GitHub Actions при пуше ветки.
+Реализации reusable workflow. В свой проект копируется не этот файл, а тонкий шаблон из
+`.github/workflow-templates/`, который ссылается сюда через `uses:`.
 
-| Workflow | Триггер | Назначение |
-|----------|--------|------------|
-| [ci-cd.yml](ci-cd.yml.md) | `push`, `pull_request`, `workflow_dispatch` | Единый пайплайн: сборка, GitHub Release, публикация (npm/docker/packagist) и деплой (`resolve-branch` → `resolve-config` → `ci` → `release-publish` → `*-publish` → `cd`) |
-| [minifier.yml](minifier.yml.md) | `push` | Автоминификация CSS и JS файлов |
-| [docgen.yml](docgen.yml.md) | `push`, `workflow_dispatch` | Генерация структуры документации в `docs/` |
+| Workflow | Триггеры | Назначение | Настройка |
+|---|---|---|---|
+| [ci-cd.yml](ci-cd.yml.md) | `push` (ветки и теги `v*`), `pull_request`, `workflow_dispatch` | Сборка и тесты, GitHub Release, публикация в npm / Docker / Packagist, деплой на сервер | Много переменных и секретов в Environment |
+| [grabber.yml](grabber.yml.md) | `workflow_dispatch` | Забирает файлы **с сервера в репозиторий**, складывает в ветку `sync/...` | `DEPLOY_*` переменные и секрет `DEPLOY_KEY` |
+| [docgen.yml](docgen.yml.md) | `push`, `workflow_dispatch` | Держит структуру `docs/` в соответствии с деревом репозитория | Только `docs/.docignore` |
+| [minifier.yml](minifier.yml.md) | `push` | Минифицирует `.css` и `.js`, коммитит `*.min.*` | Не настраивается |
 
-> Все три workflow работают независимо друг от друга. Автоматически создаваемые коммиты содержат `[skip ci]` в сообщении, чтобы не триггерить рекурсивные запуски.
-
+Workflow независимы друг от друга — подключать можно любой набор. Автоматические коммиты
+(`docgen`, `minifier`, `grabber`) выполняются от имени `github-actions[bot]`; у `docgen` и
+`minifier` сообщение содержит `[skip ci]`, чтобы запуски не зацикливались.
