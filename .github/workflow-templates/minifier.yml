@@ -1,7 +1,8 @@
 name: minifier
 
 on:
-  push: {}
+  push:
+    branches: ['**']
 
 permissions:
   contents: write
