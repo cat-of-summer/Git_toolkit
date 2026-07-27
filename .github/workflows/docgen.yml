@@ -234,6 +234,8 @@ jobs:
           Gemfile.lock
           poetry.lock
           pnpm-lock.yaml
+          __init__.py
+          pyproject.toml
 
           # Directories
           node_modules/
