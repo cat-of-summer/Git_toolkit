@@ -95,6 +95,9 @@ on:
         required: false
         type: string
         default: 'false'
+    secrets:
+      PAT_TOKEN:
+        required: false
 
 permissions:
   contents: write
